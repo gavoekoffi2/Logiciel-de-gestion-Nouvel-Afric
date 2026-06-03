@@ -1,0 +1,25 @@
+# Dependances
+node_modules/
+
+# Base de donnees (donnees locales - ne pas versionner)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environnement
+.env
+.env.local
+
+# Fichiers systeme
+.DS_Store
+Thumbs.db
+
+# Editeurs
+.vscode/
+.idea/
+*.swp

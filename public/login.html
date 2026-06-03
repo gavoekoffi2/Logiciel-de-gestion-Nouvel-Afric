@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Connexion — Nouvel Afric</title>
+  <link rel="icon" href="/assets/logo.svg" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body class="login-page">
+  <form class="login-card" id="loginForm" autocomplete="on">
+    <div class="login-logo">
+      <img src="/assets/logo.svg" alt="Nouvel Afric" class="brand-mark" />
+      <h1>NOUVEL AFRIC</h1>
+      <p>Logiciel de gestion locative immobilière</p>
+    </div>
+
+    <div id="error" class="alert alert-error" style="display:none"></div>
+
+    <div class="field">
+      <label for="username">Identifiant</label>
+      <input id="username" name="username" type="text" autocomplete="username" placeholder="ex. admin" required autofocus />
+    </div>
+    <div class="field">
+      <label for="password">Mot de passe</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required />
+    </div>
+
+    <button class="btn btn-primary btn-block" type="submit" id="submitBtn">Se connecter</button>
+
+    <p class="hint text-center" style="margin-top:18px">
+      Comptes par défaut : <b>admin / admin123</b> &nbsp;·&nbsp; <b>secretaire / secret123</b>
+    </p>
+  </form>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const errBox = document.getElementById('error');
+    const btn = document.getElementById('submitBtn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = 'Connexion…';
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Échec de la connexion');
+        window.location.href = '/';
+      } catch (err) {
+        errBox.textContent = err.message;
+        errBox.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Se connecter';
+      }
+    });
+  </script>
+</body>
+</html>

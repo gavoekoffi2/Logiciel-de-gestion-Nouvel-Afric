@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nouvel Afric — Gestion locative</title>
+  <link rel="icon" href="/assets/logo.svg" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- Barre laterale -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <img src="/assets/logo.svg" alt="" class="brand-mark" />
+        <div>
+          <b>NOUVEL AFRIC</b>
+          <span>Gestion locative</span>
+        </div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-foot" id="appVersion">v1.0</div>
+    </aside>
+    <div class="backdrop" id="backdrop" style="display:none"></div>
+
+    <!-- Zone principale -->
+    <div class="main">
+      <header class="topbar">
+        <button class="burger" id="burger" aria-label="Menu">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="page-title" id="pageTitle">Tableau de bord</div>
+        <div class="spacer"></div>
+        <div class="user-chip">
+          <div class="avatar" id="userAvatar">?</div>
+          <div>
+            <div id="userName" style="font-weight:700;font-size:13px;line-height:1.1">—</div>
+            <small id="userRole">—</small>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="logoutBtn" title="Se déconnecter">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          Quitter
+        </button>
+      </header>
+      <main class="content" id="content">
+        <div class="spinner"></div>
+      </main>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

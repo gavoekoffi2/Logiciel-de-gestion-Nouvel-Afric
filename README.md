@@ -76,6 +76,12 @@ les autres s'y connectent avec leur navigateur (Chrome, Edge, Firefox…).
 
 ---
 
+## 🌍 Mettre l'application en ligne
+
+Pour un accès **depuis n'importe où** (et pas seulement le réseau du bureau),
+voir le guide détaillé : [`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md).
+L'application est prête pour l'hébergement (HTTPS, base de données persistante, sessions sécurisées).
+
 ## 💾 Sauvegarde des données
 
 Toutes les données sont dans **un seul fichier** : `data/nouvelafric.db`.

@@ -1,0 +1,23 @@
+# Déploiement en ligne sur Render — https://render.com
+# Render lit automatiquement ce fichier ("Blueprint") pour créer le service.
+services:
+  - type: web
+    name: nouvel-afric
+    runtime: node
+    region: frankfurt          # région la plus proche (modifiable)
+    plan: starter              # un disque persistant nécessite un plan payant (≈ 7 $/mois)
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /login
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true    # clé de sécurité générée automatiquement (et conservée)
+      - key: DB_PATH
+        value: /data/nouvelafric.db
+    disk:
+      name: donnees-nouvelafric
+      mountPath: /data         # la base de données est conservée ici (ne se perd pas)
+      sizeGB: 1

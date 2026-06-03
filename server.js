@@ -19,8 +19,10 @@ const apiRouter = require('./src/api');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
+const isProd = process.env.NODE_ENV === 'production';
 
 app.disable('x-powered-by');
+if (isProd) app.set('trust proxy', 1); // derriere le proxy HTTPS de l'hebergeur
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -32,6 +34,7 @@ app.use(session({
   cookie: {
     httpOnly: true,
     sameSite: 'lax',
+    secure: isProd,             // cookie envoye uniquement en HTTPS en production
     maxAge: 1000 * 60 * 60 * 12, // 12 h
   },
 }));

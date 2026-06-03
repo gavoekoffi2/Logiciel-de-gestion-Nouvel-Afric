@@ -11,8 +11,9 @@
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
-const session = require('express-session');
+const cookieSession = require('cookie-session');
 
+const { ready } = require('./src/db');
 const { router: authRouter, requireAuth } = require('./src/auth');
 const apiRouter = require('./src/api');
 
@@ -26,17 +27,15 @@ if (isProd) app.set('trust proxy', 1); // derriere le proxy HTTPS de l'hebergeur
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-app.use(session({
+// Session stockee dans un cookie signe : aucune donnee a conserver cote serveur,
+// donc les connexions resistent aux redemarrages (ideal pour un hebergement gratuit).
+app.use(cookieSession({
   name: 'naf.sid',
-  secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: isProd,             // cookie envoye uniquement en HTTPS en production
-    maxAge: 1000 * 60 * 60 * 12, // 12 h
-  },
+  keys: [process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex')],
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: isProd,              // cookie envoye uniquement en HTTPS en production
+  maxAge: 1000 * 60 * 60 * 12, // 12 h
 }));
 
 // Routes d'authentification (publiques).
@@ -71,8 +70,17 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   res.status(500).json({ error: 'Erreur interne du serveur' });
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`\n  Nouvel Afric - Gestion locative`);
-  console.log(`  Serveur démarré sur http://localhost:${PORT}`);
-  console.log(`  (accessible sur le réseau via http://<adresse-ip-du-serveur>:${PORT})\n`);
-});
+// On attend que la base soit prete (schema + donnees initiales) avant de
+// demarrer le serveur, afin de ne jamais repondre avant que tout soit en place.
+ready
+  .then(() => {
+    app.listen(PORT, HOST, () => {
+      console.log(`\n  Nouvel Afric - Gestion locative`);
+      console.log(`  Serveur démarré sur http://localhost:${PORT}`);
+      console.log(`  (accessible sur le réseau via http://<adresse-ip-du-serveur>:${PORT})\n`);
+    });
+  })
+  .catch((err) => {
+    console.error('Échec de l’initialisation de la base de données :', err);
+    process.exit(1);
+  });

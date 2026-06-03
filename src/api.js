@@ -4,6 +4,8 @@
  * API REST : toute la logique de gestion locative transposee du fichier Excel.
  *   Proprietaires, Locataires, Maisons, Souscriptions, Reglements,
  *   Tableau de bord, Parametres et Utilisateurs.
+ *
+ * L'acces a la base est asynchrone (await) : voir src/db.js.
  */
 
 const express = require('express');
@@ -51,47 +53,48 @@ function typeCode(type) {
   return 'MX';
 }
 
-function codeExists(table, code) {
-  return !!db.prepare(`SELECT 1 FROM ${table} WHERE code = ?`).get(code);
+async function codeExists(table, code) {
+  return !!(await db.prepare(`SELECT 1 FROM ${table} WHERE code = ?`).get(code));
 }
 
-function genPropertyCode(type, pieces, cout, dateStr) {
+async function genPropertyCode(type, pieces, cout, dateStr) {
   const base = `${typeCode(type)}_P${toInt(pieces)}_C${toInt(cout)}_M${dateCode(dateStr)}`;
   let code;
-  do { code = `${base}A${rand()}`; } while (codeExists('properties', code));
+  do { code = `${base}A${rand()}`; } while (await codeExists('properties', code));
   return code;
 }
 
-function genCode(table, prefix, dateStr) {
+async function genCode(table, prefix, dateStr) {
   let code;
-  do { code = `${prefix}${dateCode(dateStr)}A${rand()}`; } while (codeExists(table, code));
+  do { code = `${prefix}${dateCode(dateStr)}A${rand()}`; } while (await codeExists(table, code));
   return code;
 }
 
 // Petit utilitaire pour rattraper les erreurs d'une route sans repeter try/catch.
-const wrap = (fn) => (req, res) => {
-  try { fn(req, res); }
-  catch (err) {
+const wrap = (fn) => async (req, res) => {
+  try {
+    await fn(req, res);
+  } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message || 'Erreur serveur' });
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Erreur serveur' });
   }
 };
 
 // ===========================================================================
 // PROPRIETAIRES
 // ===========================================================================
-router.get('/owners', wrap((req, res) => {
+router.get('/owners', wrap(async (req, res) => {
   const q = clean(req.query.q);
   let rows;
   if (q) {
     const like = `%${q}%`;
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT * FROM owners
        WHERE nom_prenoms LIKE ? OR contact LIKE ? OR email LIKE ? OR adresse LIKE ?
        ORDER BY nom_prenoms COLLATE NOCASE`
     ).all(like, like, like, like);
   } else {
-    rows = db.prepare('SELECT * FROM owners ORDER BY nom_prenoms COLLATE NOCASE').all();
+    rows = await db.prepare('SELECT * FROM owners ORDER BY nom_prenoms COLLATE NOCASE').all();
   }
   res.json(rows);
 }));
@@ -105,84 +108,84 @@ function personPayload(body) {
   };
 }
 
-function validatePerson(p, table, excludeId, label) {
+async function validatePerson(p, table, excludeId, label) {
   if (!p.nom_prenoms) return 'Veuillez saisir le nom et prénoms.';
   if (!p.contact) return 'Veuillez saisir le contact.';
-  const dup = db
+  const dup = await db
     .prepare(`SELECT id FROM ${table} WHERE lower(nom_prenoms) = lower(?) AND id <> ?`)
     .get(p.nom_prenoms, excludeId || 0);
   if (dup) return `Ce nom de ${label} existe déjà. Ajoutez un élément distinctif s’il s’agit de deux personnes différentes.`;
   return null;
 }
 
-router.post('/owners', wrap((req, res) => {
+router.post('/owners', wrap(async (req, res) => {
   const p = personPayload(req.body);
-  const err = validatePerson(p, 'owners', 0, 'propriétaire');
+  const err = await validatePerson(p, 'owners', 0, 'propriétaire');
   if (err) return res.status(400).json({ error: err });
-  const info = db.prepare(
+  const info = await db.prepare(
     'INSERT INTO owners (nom_prenoms, contact, email, adresse) VALUES (?,?,?,?)'
   ).run(p.nom_prenoms, p.contact, p.email, p.adresse);
-  res.json(db.prepare('SELECT * FROM owners WHERE id = ?').get(info.lastInsertRowid));
+  res.json(await db.prepare('SELECT * FROM owners WHERE id = ?').get(info.lastInsertRowid));
 }));
 
-router.put('/owners/:id', wrap((req, res) => {
+router.put('/owners/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
   const p = personPayload(req.body);
-  const err = validatePerson(p, 'owners', id, 'propriétaire');
+  const err = await validatePerson(p, 'owners', id, 'propriétaire');
   if (err) return res.status(400).json({ error: err });
-  db.prepare(
+  await db.prepare(
     'UPDATE owners SET nom_prenoms=?, contact=?, email=?, adresse=? WHERE id=?'
   ).run(p.nom_prenoms, p.contact, p.email, p.adresse, id);
-  res.json(db.prepare('SELECT * FROM owners WHERE id = ?').get(id));
+  res.json(await db.prepare('SELECT * FROM owners WHERE id = ?').get(id));
 }));
 
-router.delete('/owners/:id', wrap((req, res) => {
-  db.prepare('DELETE FROM owners WHERE id = ?').run(toInt(req.params.id));
+router.delete('/owners/:id', wrap(async (req, res) => {
+  await db.prepare('DELETE FROM owners WHERE id = ?').run(toInt(req.params.id));
   res.json({ ok: true });
 }));
 
 // ===========================================================================
 // LOCATAIRES
 // ===========================================================================
-router.get('/tenants', wrap((req, res) => {
+router.get('/tenants', wrap(async (req, res) => {
   const q = clean(req.query.q);
   let rows;
   if (q) {
     const like = `%${q}%`;
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT * FROM tenants
        WHERE nom_prenoms LIKE ? OR contact LIKE ? OR email LIKE ? OR adresse LIKE ?
        ORDER BY nom_prenoms COLLATE NOCASE`
     ).all(like, like, like, like);
   } else {
-    rows = db.prepare('SELECT * FROM tenants ORDER BY nom_prenoms COLLATE NOCASE').all();
+    rows = await db.prepare('SELECT * FROM tenants ORDER BY nom_prenoms COLLATE NOCASE').all();
   }
   res.json(rows);
 }));
 
-router.post('/tenants', wrap((req, res) => {
+router.post('/tenants', wrap(async (req, res) => {
   const p = personPayload(req.body);
-  const err = validatePerson(p, 'tenants', 0, 'locataire');
+  const err = await validatePerson(p, 'tenants', 0, 'locataire');
   if (err) return res.status(400).json({ error: err });
-  const info = db.prepare(
+  const info = await db.prepare(
     'INSERT INTO tenants (nom_prenoms, contact, email, adresse) VALUES (?,?,?,?)'
   ).run(p.nom_prenoms, p.contact, p.email, p.adresse);
-  res.json(db.prepare('SELECT * FROM tenants WHERE id = ?').get(info.lastInsertRowid));
+  res.json(await db.prepare('SELECT * FROM tenants WHERE id = ?').get(info.lastInsertRowid));
 }));
 
-router.put('/tenants/:id', wrap((req, res) => {
+router.put('/tenants/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
   const p = personPayload(req.body);
-  const err = validatePerson(p, 'tenants', id, 'locataire');
+  const err = await validatePerson(p, 'tenants', id, 'locataire');
   if (err) return res.status(400).json({ error: err });
-  db.prepare(
+  await db.prepare(
     'UPDATE tenants SET nom_prenoms=?, contact=?, email=?, adresse=? WHERE id=?'
   ).run(p.nom_prenoms, p.contact, p.email, p.adresse, id);
-  res.json(db.prepare('SELECT * FROM tenants WHERE id = ?').get(id));
+  res.json(await db.prepare('SELECT * FROM tenants WHERE id = ?').get(id));
 }));
 
-router.delete('/tenants/:id', wrap((req, res) => {
-  db.prepare('DELETE FROM tenants WHERE id = ?').run(toInt(req.params.id));
+router.delete('/tenants/:id', wrap(async (req, res) => {
+  await db.prepare('DELETE FROM tenants WHERE id = ?').run(toInt(req.params.id));
   res.json({ ok: true });
 }));
 
@@ -199,10 +202,10 @@ const PROPERTY_SELECT = `
   LEFT JOIN owners o ON o.id = p.owner_id
 `;
 
-router.get('/properties', wrap((req, res) => {
+router.get('/properties', wrap(async (req, res) => {
   const q = clean(req.query.q);
   const statut = clean(req.query.statut);
-  let rows = db.prepare(`${PROPERTY_SELECT} ORDER BY p.id DESC`).all();
+  let rows = await db.prepare(`${PROPERTY_SELECT} ORDER BY p.id DESC`).all();
   if (q) {
     const s = q.toLowerCase();
     rows = rows.filter((r) =>
@@ -214,9 +217,9 @@ router.get('/properties', wrap((req, res) => {
 }));
 
 // Maisons disponibles (pour une nouvelle souscription).
-router.get('/properties/available', wrap((req, res) => {
+router.get('/properties/available', wrap(async (req, res) => {
   const current = toInt(req.query.current); // bien deja lie (en modification)
-  const rows = db.prepare(`${PROPERTY_SELECT}`).all()
+  const rows = (await db.prepare(`${PROPERTY_SELECT}`).all())
     .filter((r) => r.statut === 'Disponible' || r.id === current);
   res.json(rows);
 }));
@@ -245,39 +248,39 @@ function validateProperty(p) {
   return null;
 }
 
-router.post('/properties', wrap((req, res) => {
+router.post('/properties', wrap(async (req, res) => {
   const p = propertyPayload(req.body);
   const err = validateProperty(p);
   if (err) return res.status(400).json({ error: err });
-  const code = genPropertyCode(p.type_construction, p.nombre_piece, p.cout_loyer, req.body.date);
-  const info = db.prepare(
+  const code = await genPropertyCode(p.type_construction, p.nombre_piece, p.cout_loyer, req.body.date);
+  const info = await db.prepare(
     `INSERT INTO properties
      (code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
      VALUES (@code,@owner_id,@type_construction,@nombre_piece,@cout_loyer,@ville,@commune,@quartier,@observation,@part_commission,@nombre_porte)`
   ).run({ code, ...p });
-  res.json(db.prepare(`${PROPERTY_SELECT} WHERE p.id = ?`).get(info.lastInsertRowid));
+  res.json(await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ?`).get(info.lastInsertRowid));
 }));
 
-router.put('/properties/:id', wrap((req, res) => {
+router.put('/properties/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
   const p = propertyPayload(req.body);
   const err = validateProperty(p);
   if (err) return res.status(400).json({ error: err });
-  db.prepare(
+  await db.prepare(
     `UPDATE properties SET
        owner_id=@owner_id, type_construction=@type_construction, nombre_piece=@nombre_piece,
        cout_loyer=@cout_loyer, ville=@ville, commune=@commune, quartier=@quartier,
        observation=@observation, part_commission=@part_commission, nombre_porte=@nombre_porte
      WHERE id=@id`
   ).run({ id, ...p });
-  res.json(db.prepare(`${PROPERTY_SELECT} WHERE p.id = ?`).get(id));
+  res.json(await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ?`).get(id));
 }));
 
-router.delete('/properties/:id', wrap((req, res) => {
+router.delete('/properties/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
-  const sub = db.prepare("SELECT 1 FROM subscriptions WHERE property_id = ? AND statut='Active'").get(id);
+  const sub = await db.prepare("SELECT 1 FROM subscriptions WHERE property_id = ? AND statut='Active'").get(id);
   if (sub) return res.status(400).json({ error: 'Impossible de supprimer : ce bien a une souscription active.' });
-  db.prepare('DELETE FROM properties WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM properties WHERE id = ?').run(id);
   res.json({ ok: true });
 }));
 
@@ -294,9 +297,9 @@ const SUB_SELECT = `
   LEFT JOIN tenants t ON t.id = s.tenant_id
 `;
 
-router.get('/subscriptions', wrap((req, res) => {
+router.get('/subscriptions', wrap(async (req, res) => {
   const q = clean(req.query.q);
-  let rows = db.prepare(`${SUB_SELECT} ORDER BY s.id DESC`).all();
+  let rows = await db.prepare(`${SUB_SELECT} ORDER BY s.id DESC`).all();
   if (q) {
     const s = q.toLowerCase();
     rows = rows.filter((r) =>
@@ -305,12 +308,12 @@ router.get('/subscriptions', wrap((req, res) => {
   res.json(rows);
 }));
 
-router.get('/subscriptions/active', wrap((req, res) => {
-  res.json(db.prepare(`${SUB_SELECT} WHERE s.statut='Active' ORDER BY t.nom_prenoms COLLATE NOCASE`).all());
+router.get('/subscriptions/active', wrap(async (req, res) => {
+  res.json(await db.prepare(`${SUB_SELECT} WHERE s.statut='Active' ORDER BY t.nom_prenoms COLLATE NOCASE`).all());
 }));
 
-router.get('/subscriptions/:id', wrap((req, res) => {
-  const row = db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(toInt(req.params.id));
+router.get('/subscriptions/:id', wrap(async (req, res) => {
+  const row = await db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(toInt(req.params.id));
   if (!row) return res.status(404).json({ error: 'Souscription introuvable' });
   res.json(row);
 }));
@@ -345,12 +348,12 @@ function validateSubscription(s) {
   return null;
 }
 
-router.post('/subscriptions', wrap((req, res) => {
+router.post('/subscriptions', wrap(async (req, res) => {
   const s = subscriptionPayload(req.body);
   const err = validateSubscription(s);
   if (err) return res.status(400).json({ error: err });
-  const code = genCode('subscriptions', 'S', s.date_souscription);
-  const info = db.prepare(
+  const code = await genCode('subscriptions', 'S', s.date_souscription);
+  const info = await db.prepare(
     `INSERT INTO subscriptions
      (code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution,
       montant_caution, nombre_mois_avance, montant_avance, autre_frais, montant_autre_frais,
@@ -359,15 +362,15 @@ router.post('/subscriptions', wrap((req, res) => {
       @montant_caution,@nombre_mois_avance,@montant_avance,@autre_frais,@montant_autre_frais,
       @date_entree,@date_debut_paiement,@statut)`
   ).run({ code, ...s });
-  res.json(db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(info.lastInsertRowid));
+  res.json(await db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(info.lastInsertRowid));
 }));
 
-router.put('/subscriptions/:id', wrap((req, res) => {
+router.put('/subscriptions/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
   const s = subscriptionPayload(req.body);
   const err = validateSubscription(s);
   if (err) return res.status(400).json({ error: err });
-  db.prepare(
+  await db.prepare(
     `UPDATE subscriptions SET
        property_id=@property_id, tenant_id=@tenant_id, date_souscription=@date_souscription,
        montant_loyer=@montant_loyer, nombre_mois_caution=@nombre_mois_caution, montant_caution=@montant_caution,
@@ -376,11 +379,11 @@ router.put('/subscriptions/:id', wrap((req, res) => {
        date_debut_paiement=@date_debut_paiement, statut=@statut
      WHERE id=@id`
   ).run({ id, ...s });
-  res.json(db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(id));
+  res.json(await db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(id));
 }));
 
-router.delete('/subscriptions/:id', wrap((req, res) => {
-  db.prepare('DELETE FROM subscriptions WHERE id = ?').run(toInt(req.params.id));
+router.delete('/subscriptions/:id', wrap(async (req, res) => {
+  await db.prepare('DELETE FROM subscriptions WHERE id = ?').run(toInt(req.params.id));
   res.json({ ok: true });
 }));
 
@@ -397,12 +400,12 @@ const PAY_SELECT = `
   LEFT JOIN subscriptions s ON s.id = r.subscription_id
 `;
 
-router.get('/payments', wrap((req, res) => {
+router.get('/payments', wrap(async (req, res) => {
   const q = clean(req.query.q);
   const mois = clean(req.query.mois);
   const annee = clean(req.query.annee);
   const statut = clean(req.query.statut);
-  let rows = db.prepare(`${PAY_SELECT} ORDER BY r.id DESC`).all();
+  let rows = await db.prepare(`${PAY_SELECT} ORDER BY r.id DESC`).all();
   if (mois) rows = rows.filter((r) => r.mois_concerne === mois);
   if (annee) rows = rows.filter((r) => String(r.annee_concernee) === annee);
   if (statut) rows = rows.filter((r) => r.statut === statut);
@@ -414,13 +417,13 @@ router.get('/payments', wrap((req, res) => {
   res.json(rows);
 }));
 
-router.get('/payments/:id', wrap((req, res) => {
-  const row = db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(toInt(req.params.id));
+router.get('/payments/:id', wrap(async (req, res) => {
+  const row = await db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(toInt(req.params.id));
   if (!row) return res.status(404).json({ error: 'Règlement introuvable' });
   res.json(row);
 }));
 
-function paymentPayload(body) {
+async function paymentPayload(body) {
   let subscription_id = toInt(body.subscription_id) || null;
   let property_id = toInt(body.property_id) || null;
   let tenant_id = toInt(body.tenant_id) || null;
@@ -429,7 +432,7 @@ function paymentPayload(body) {
   // On complete automatiquement le bien, le locataire et le loyer du a partir
   // de la souscription choisie (comme dans le fichier Excel d'origine).
   if (subscription_id) {
-    const sub = db.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscription_id);
+    const sub = await db.prepare('SELECT * FROM subscriptions WHERE id = ?').get(subscription_id);
     if (sub) {
       if (!property_id) property_id = sub.property_id;
       if (!tenant_id) tenant_id = sub.tenant_id;
@@ -462,43 +465,43 @@ function validatePayment(r) {
   return null;
 }
 
-router.post('/payments', wrap((req, res) => {
-  const r = paymentPayload(req.body);
+router.post('/payments', wrap(async (req, res) => {
+  const r = await paymentPayload(req.body);
   const err = validatePayment(r);
   if (err) return res.status(400).json({ error: err });
-  const code = genCode('payments', 'R', r.date);
-  const info = db.prepare(
+  const code = await genCode('payments', 'R', r.date);
+  const info = await db.prepare(
     `INSERT INTO payments
      (code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye,
       reste_a_payer, mois_concerne, annee_concernee, statut)
      VALUES (@code,@subscription_id,@property_id,@tenant_id,@date,@montant_a_payer,@montant_paye,
       @reste_a_payer,@mois_concerne,@annee_concernee,@statut)`
   ).run({ code, ...r });
-  res.json(db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(info.lastInsertRowid));
+  res.json(await db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(info.lastInsertRowid));
 }));
 
-router.put('/payments/:id', wrap((req, res) => {
+router.put('/payments/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
-  const r = paymentPayload(req.body);
+  const r = await paymentPayload(req.body);
   const err = validatePayment(r);
   if (err) return res.status(400).json({ error: err });
-  db.prepare(
+  await db.prepare(
     `UPDATE payments SET
        subscription_id=@subscription_id, property_id=@property_id, tenant_id=@tenant_id, date=@date,
        montant_a_payer=@montant_a_payer, montant_paye=@montant_paye, reste_a_payer=@reste_a_payer,
        mois_concerne=@mois_concerne, annee_concernee=@annee_concernee, statut=@statut
      WHERE id=@id`
   ).run({ id, ...r });
-  res.json(db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(id));
+  res.json(await db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(id));
 }));
 
-router.delete('/payments/:id', wrap((req, res) => {
-  db.prepare('DELETE FROM payments WHERE id = ?').run(toInt(req.params.id));
+router.delete('/payments/:id', wrap(async (req, res) => {
+  await db.prepare('DELETE FROM payments WHERE id = ?').run(toInt(req.params.id));
   res.json({ ok: true });
 }));
 
 // Encaissement multiple : enregistre le loyer du mois pour plusieurs souscriptions.
-router.post('/payments/bulk', wrap((req, res) => {
+router.post('/payments/bulk', wrap(async (req, res) => {
   const date = clean(req.body.date);
   const mois = clean(req.body.mois);
   const annee = toInt(req.body.annee);
@@ -508,71 +511,78 @@ router.post('/payments/bulk', wrap((req, res) => {
 
   let crees = 0;
   let ignores = 0;
-  const tx = db.transaction(() => {
-    for (const sid of ids) {
-      const sub = db.prepare("SELECT * FROM subscriptions WHERE id = ? AND statut='Active'").get(sid);
-      if (!sub) { ignores++; continue; }
-      // Eviter un double encaissement pour la meme periode.
-      const exist = db.prepare(
-        'SELECT 1 FROM payments WHERE subscription_id=? AND mois_concerne=? AND annee_concernee=?'
-      ).get(sid, mois, annee);
-      if (exist) { ignores++; continue; }
-      const code = genCode('payments', 'R', date);
-      db.prepare(
-        `INSERT INTO payments
-         (code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye,
-          reste_a_payer, mois_concerne, annee_concernee, statut)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-      ).run(code, sub.id, sub.property_id, sub.tenant_id, date || null,
-        sub.montant_loyer, sub.montant_loyer, 0, mois, annee, 'Soldé');
-      crees++;
-    }
-  });
-  tx();
+  for (const sid of ids) {
+    const sub = await db.prepare("SELECT * FROM subscriptions WHERE id = ? AND statut='Active'").get(sid);
+    if (!sub) { ignores++; continue; }
+    // Eviter un double encaissement pour la meme periode.
+    const exist = await db.prepare(
+      'SELECT 1 FROM payments WHERE subscription_id=? AND mois_concerne=? AND annee_concernee=?'
+    ).get(sid, mois, annee);
+    if (exist) { ignores++; continue; }
+    const code = await genCode('payments', 'R', date);
+    await db.prepare(
+      `INSERT INTO payments
+       (code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye,
+        reste_a_payer, mois_concerne, annee_concernee, statut)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(code, sub.id, sub.property_id, sub.tenant_id, date || null,
+      sub.montant_loyer, sub.montant_loyer, 0, mois, annee, 'Soldé');
+    crees++;
+  }
   res.json({ ok: true, crees, ignores });
 }));
 
 // ===========================================================================
 // TABLEAU DE BORD
 // ===========================================================================
-router.get('/dashboard', wrap((req, res) => {
+router.get('/dashboard', wrap(async (req, res) => {
   const now = new Date();
   const moisCourant = MOIS[now.getMonth()];
   const anneeCourante = now.getFullYear();
 
   const one = (sql, ...p) => db.prepare(sql).get(...p);
 
-  const nb_maisons = one('SELECT COUNT(*) n FROM properties').n;
-  const nb_occupees = one(
-    "SELECT COUNT(DISTINCT property_id) n FROM subscriptions WHERE statut='Active' AND property_id IS NOT NULL"
-  ).n;
+  const [
+    proprietaires, locataires, maisons, occupees,
+    caution, avance, loyer, attendu, encaisseMois, impayesNb, impayesMt,
+    derniers_paiements, allProps,
+  ] = await Promise.all([
+    one('SELECT COUNT(*) n FROM owners'),
+    one('SELECT COUNT(*) n FROM tenants'),
+    one('SELECT COUNT(*) n FROM properties'),
+    one("SELECT COUNT(DISTINCT property_id) n FROM subscriptions WHERE statut='Active' AND property_id IS NOT NULL"),
+    one('SELECT COALESCE(SUM(montant_caution),0) s FROM subscriptions'),
+    one('SELECT COALESCE(SUM(montant_avance),0) s FROM subscriptions'),
+    one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments'),
+    one("SELECT COALESCE(SUM(montant_loyer),0) s FROM subscriptions WHERE statut='Active'"),
+    one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE mois_concerne=? AND annee_concernee=?', moisCourant, anneeCourante),
+    one("SELECT COUNT(*) n FROM payments WHERE statut='Non soldé'"),
+    one("SELECT COALESCE(SUM(reste_a_payer),0) s FROM payments WHERE statut='Non soldé'"),
+    db.prepare(`${PAY_SELECT} ORDER BY r.id DESC LIMIT 6`).all(),
+    db.prepare(`${PROPERTY_SELECT}`).all(),
+  ]);
 
+  const nb_maisons = maisons.n;
+  const nb_occupees = occupees.n;
   const data = {
     moisCourant,
     anneeCourante,
-    nb_proprietaires: one('SELECT COUNT(*) n FROM owners').n,
-    nb_locataires: one('SELECT COUNT(*) n FROM tenants').n,
+    nb_proprietaires: proprietaires.n,
+    nb_locataires: locataires.n,
     nb_maisons,
     nb_occupees,
     nb_disponibles: nb_maisons - nb_occupees,
-    total_caution: one('SELECT COALESCE(SUM(montant_caution),0) s FROM subscriptions').s,
-    total_avance: one('SELECT COALESCE(SUM(montant_avance),0) s FROM subscriptions').s,
-    total_loyer: one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments').s,
-    loyer_attendu: one("SELECT COALESCE(SUM(montant_loyer),0) s FROM subscriptions WHERE statut='Active'").s,
-    loyer_encaisse_mois: one(
-      'SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE mois_concerne=? AND annee_concernee=?',
-      moisCourant, anneeCourante
-    ).s,
-    impayes_nombre: one("SELECT COUNT(*) n FROM payments WHERE statut='Non soldé'").n,
-    impayes_montant: one("SELECT COALESCE(SUM(reste_a_payer),0) s FROM payments WHERE statut='Non soldé'").s,
+    total_caution: caution.s,
+    total_avance: avance.s,
+    total_loyer: loyer.s,
+    loyer_attendu: attendu.s,
+    loyer_encaisse_mois: encaisseMois.s,
+    impayes_nombre: impayesNb.n,
+    impayes_montant: impayesMt.s,
   };
   data.reste_attendu_mois = Math.max(0, data.loyer_attendu - data.loyer_encaisse_mois);
-
-  data.derniers_paiements = db.prepare(
-    `${PAY_SELECT} ORDER BY r.id DESC LIMIT 6`
-  ).all();
-  data.maisons_disponibles = db.prepare(`${PROPERTY_SELECT}`).all()
-    .filter((r) => r.statut === 'Disponible').slice(0, 6);
+  data.derniers_paiements = derniers_paiements;
+  data.maisons_disponibles = allProps.filter((r) => r.statut === 'Disponible').slice(0, 6);
 
   res.json(data);
 }));
@@ -580,13 +590,13 @@ router.get('/dashboard', wrap((req, res) => {
 // ===========================================================================
 // PARAMETRES
 // ===========================================================================
-router.get('/settings', wrap((req, res) => {
-  res.json(db.prepare('SELECT * FROM settings WHERE id = 1').get());
+router.get('/settings', wrap(async (req, res) => {
+  res.json(await db.prepare('SELECT * FROM settings WHERE id = 1').get());
 }));
 
-router.put('/settings', requireRole('admin'), wrap((req, res) => {
+router.put('/settings', requireRole('admin'), wrap(async (req, res) => {
   const b = req.body || {};
-  db.prepare(
+  await db.prepare(
     'UPDATE settings SET entreprise=?, telephone=?, email=?, adresse=?, devise=? WHERE id=1'
   ).run(
     clean(b.entreprise) || 'NOUVEL AFRIC',
@@ -595,52 +605,52 @@ router.put('/settings', requireRole('admin'), wrap((req, res) => {
     clean(b.adresse),
     clean(b.devise) || 'FCFA'
   );
-  res.json(db.prepare('SELECT * FROM settings WHERE id = 1').get());
+  res.json(await db.prepare('SELECT * FROM settings WHERE id = 1').get());
 }));
 
 // ===========================================================================
 // UTILISATEURS (administrateur uniquement)
 // ===========================================================================
-router.get('/users', requireRole('admin'), wrap((req, res) => {
-  res.json(db.prepare('SELECT id, username, nom, role, actif, created_at FROM users ORDER BY id').all());
+router.get('/users', requireRole('admin'), wrap(async (req, res) => {
+  res.json(await db.prepare('SELECT id, username, nom, role, actif, created_at FROM users ORDER BY id').all());
 }));
 
-router.post('/users', requireRole('admin'), wrap((req, res) => {
+router.post('/users', requireRole('admin'), wrap(async (req, res) => {
   const username = clean(req.body.username).toLowerCase();
   const password = clean(req.body.password);
   const nom = clean(req.body.nom);
   const role = clean(req.body.role) === 'admin' ? 'admin' : 'secretaire';
   if (!username || !password) return res.status(400).json({ error: 'Identifiant et mot de passe requis.' });
-  if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
+  if (await db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) {
     return res.status(400).json({ error: 'Cet identifiant existe déjà.' });
   }
-  const info = db.prepare(
+  const info = await db.prepare(
     'INSERT INTO users (username, password, nom, role) VALUES (?,?,?,?)'
   ).run(username, hashPassword(password), nom, role);
-  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
+  res.json(publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
 }));
 
-router.put('/users/:id', requireRole('admin'), wrap((req, res) => {
+router.put('/users/:id', requireRole('admin'), wrap(async (req, res) => {
   const id = toInt(req.params.id);
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable.' });
   const nom = clean(req.body.nom) || user.nom;
   const role = clean(req.body.role) === 'admin' ? 'admin' : 'secretaire';
   const actif = req.body.actif === undefined ? user.actif : (req.body.actif ? 1 : 0);
   const password = clean(req.body.password);
   if (password) {
-    db.prepare('UPDATE users SET nom=?, role=?, actif=?, password=? WHERE id=?')
+    await db.prepare('UPDATE users SET nom=?, role=?, actif=?, password=? WHERE id=?')
       .run(nom, role, actif, hashPassword(password), id);
   } else {
-    db.prepare('UPDATE users SET nom=?, role=?, actif=? WHERE id=?').run(nom, role, actif, id);
+    await db.prepare('UPDATE users SET nom=?, role=?, actif=? WHERE id=?').run(nom, role, actif, id);
   }
-  res.json(publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id)));
+  res.json(publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(id)));
 }));
 
-router.delete('/users/:id', requireRole('admin'), wrap((req, res) => {
+router.delete('/users/:id', requireRole('admin'), wrap(async (req, res) => {
   const id = toInt(req.params.id);
   if (id === req.session.userId) return res.status(400).json({ error: 'Vous ne pouvez pas supprimer votre propre compte.' });
-  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  await db.prepare('DELETE FROM users WHERE id = ?').run(id);
   res.json({ ok: true });
 }));
 

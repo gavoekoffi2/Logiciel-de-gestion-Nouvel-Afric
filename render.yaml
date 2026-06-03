@@ -1,11 +1,13 @@
-# Déploiement en ligne sur Render — https://render.com
-# Render lit automatiquement ce fichier ("Blueprint") pour créer le service.
+# Déploiement GRATUIT sur Render — https://render.com
+# Render lit ce fichier ("Blueprint") pour créer le service automatiquement.
+# Les données sont stockées dans Turso (base en ligne gratuite) : il faut donc
+# renseigner TURSO_DATABASE_URL et TURSO_AUTH_TOKEN (voir docs/DEPLOIEMENT.md).
 services:
   - type: web
     name: nouvel-afric
     runtime: node
-    region: frankfurt          # région la plus proche (modifiable)
-    plan: starter              # un disque persistant nécessite un plan payant (≈ 7 $/mois)
+    region: frankfurt
+    plan: free                 # gratuit (le service s'endort après ~15 min d'inactivité)
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /login
@@ -15,9 +17,7 @@ services:
         value: production
       - key: SESSION_SECRET
         generateValue: true    # clé de sécurité générée automatiquement (et conservée)
-      - key: DB_PATH
-        value: /data/nouvelafric.db
-    disk:
-      name: donnees-nouvelafric
-      mountPath: /data         # la base de données est conservée ici (ne se perd pas)
-      sizeGB: 1
+      - key: TURSO_DATABASE_URL
+        sync: false            # à coller depuis Turso (ex. libsql://xxx.turso.io)
+      - key: TURSO_AUTH_TOKEN
+        sync: false            # à coller depuis Turso (jeton d'accès)

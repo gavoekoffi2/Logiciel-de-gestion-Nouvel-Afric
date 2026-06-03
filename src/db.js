@@ -1,35 +1,82 @@
 'use strict';
 
 /**
- * Base de donnees SQLite du logiciel de gestion locative "Nouvel Afric".
+ * Base de donnees du logiciel de gestion locative "Nouvel Afric".
  *
- * Tout est dans un seul fichier (data/nouvelafric.db) : facile a sauvegarder
- * (il suffit de copier le fichier) et a deployer. SQLite gere parfaitement
- * la charge d'un cabinet de gestion immobiliere (plusieurs utilisateurs en
- * reseau local ou via un petit serveur).
+ * Utilise libSQL (100 % compatible SQLite) via @libsql/client :
+ *   - EN LOCAL  : un simple fichier  data/nouvelafric.db
+ *   - EN LIGNE  : une base hebergee GRATUITEMENT sur Turso (les donnees y sont
+ *                 conservees en permanence), activee des que la variable
+ *                 d'environnement TURSO_DATABASE_URL est definie.
+ *
+ * L'acces a la base est asynchrone : un petit adaptateur "db.prepare(sql)"
+ * reproduit l'interface habituelle .get() / .all() / .run() (avec await) afin
+ * de garder un code clair et proche du SQLite classique.
  */
 
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const Database = require('better-sqlite3');
+const { createClient } = require('@libsql/client');
 
-// Emplacement de la base : par defaut data/nouvelafric.db, ou DB_PATH (ex. un
-// disque persistant /data/... chez un hebergeur en ligne).
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'nouvelafric.db');
-const DB_DIR = path.dirname(DB_PATH);
-if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+// ---------------------------------------------------------------------------
+// Connexion : Turso (en ligne) si configure, sinon fichier local.
+// ---------------------------------------------------------------------------
+let client;
+if (process.env.TURSO_DATABASE_URL) {
+  client = createClient({
+    url: process.env.TURSO_DATABASE_URL,
+    authToken: process.env.TURSO_AUTH_TOKEN,
+  });
+  console.log('Base de donnees : Turso (en ligne) - les donnees sont conservees.');
+} else {
+  const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'nouvelafric.db');
+  const DB_DIR = path.dirname(DB_PATH);
+  if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+  client = createClient({ url: `file:${DB_PATH}` });
+  console.log(`Base de donnees : fichier local (${DB_PATH}).`);
+}
 
-const db = new Database(DB_PATH);
+// ---------------------------------------------------------------------------
+// Adaptateur asynchrone .prepare(sql).get()/.all()/.run()
+//  - 1 seul argument objet  -> parametres nommes (@cle / :cle)
+//  - sinon                  -> parametres positionnels (?)
+// ---------------------------------------------------------------------------
+function buildStmt(sql, params) {
+  if (params.length === 0) return sql;
+  if (params.length === 1 && params[0] && typeof params[0] === 'object' && !Array.isArray(params[0])) {
+    return { sql, args: params[0] };
+  }
+  return { sql, args: params };
+}
 
-// Reglages de robustesse / performance pour un usage multi-utilisateurs.
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const db = {
+  prepare(sql) {
+    return {
+      async get(...params) {
+        const r = await client.execute(buildStmt(sql, params));
+        return r.rows[0];
+      },
+      async all(...params) {
+        const r = await client.execute(buildStmt(sql, params));
+        return r.rows;
+      },
+      async run(...params) {
+        const r = await client.execute(buildStmt(sql, params));
+        return {
+          // libSQL renvoie un BigInt : on le convertit en nombre classique.
+          lastInsertRowid: r.lastInsertRowid == null ? undefined : Number(r.lastInsertRowid),
+          changes: r.rowsAffected,
+        };
+      },
+    };
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
-db.exec(`
+const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS users (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   username   TEXT UNIQUE NOT NULL,
@@ -49,7 +96,7 @@ CREATE TABLE IF NOT EXISTS settings (
   devise     TEXT NOT NULL DEFAULT 'FCFA'
 );
 
-CREATE TABLE IF NOT EXISTS owners (            -- Proprietaires
+CREATE TABLE IF NOT EXISTS owners (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   nom_prenoms TEXT NOT NULL,
   contact     TEXT,
@@ -58,7 +105,7 @@ CREATE TABLE IF NOT EXISTS owners (            -- Proprietaires
   created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
-CREATE TABLE IF NOT EXISTS tenants (           -- Locataires
+CREATE TABLE IF NOT EXISTS tenants (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   nom_prenoms TEXT NOT NULL,
   contact     TEXT,
@@ -67,7 +114,7 @@ CREATE TABLE IF NOT EXISTS tenants (           -- Locataires
   created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
-CREATE TABLE IF NOT EXISTS properties (        -- Maisons / biens
+CREATE TABLE IF NOT EXISTS properties (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   code              TEXT UNIQUE NOT NULL,
   owner_id          INTEGER REFERENCES owners(id) ON DELETE SET NULL,
@@ -83,7 +130,7 @@ CREATE TABLE IF NOT EXISTS properties (        -- Maisons / biens
   created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
-CREATE TABLE IF NOT EXISTS subscriptions (     -- Souscriptions / baux
+CREATE TABLE IF NOT EXISTS subscriptions (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   code                TEXT UNIQUE NOT NULL,
   property_id         INTEGER REFERENCES properties(id) ON DELETE SET NULL,
@@ -102,7 +149,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (     -- Souscriptions / baux
   created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
-CREATE TABLE IF NOT EXISTS payments (          -- Reglements / paiements de loyer
+CREATE TABLE IF NOT EXISTS payments (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   code            TEXT UNIQUE NOT NULL,
   subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE SET NULL,
@@ -123,7 +170,7 @@ CREATE INDEX IF NOT EXISTS idx_sub_prop     ON subscriptions(property_id);
 CREATE INDEX IF NOT EXISTS idx_sub_tenant   ON subscriptions(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_pay_sub      ON payments(subscription_id);
 CREATE INDEX IF NOT EXISTS idx_pay_periode  ON payments(annee_concernee, mois_concerne);
-`);
+`;
 
 // ---------------------------------------------------------------------------
 // Securite : hachage des mots de passe (scrypt, integre a Node, sans dependance)
@@ -146,19 +193,17 @@ function verifyPassword(password, stored) {
 // ---------------------------------------------------------------------------
 // Donnees initiales (utilisateurs, parametres, et un jeu d'exemple)
 // ---------------------------------------------------------------------------
-function seed() {
-  const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+async function seed() {
+  const userCount = (await db.prepare('SELECT COUNT(*) AS n FROM users').get()).n;
   if (userCount === 0) {
-    const insUser = db.prepare(
-      'INSERT INTO users (username, password, nom, role) VALUES (?,?,?,?)'
-    );
-    insUser.run('admin', hashPassword('admin123'), 'Administrateur', 'admin');
-    insUser.run('secretaire', hashPassword('secret123'), 'Secrétaire', 'secretaire');
+    const insUser = db.prepare('INSERT INTO users (username, password, nom, role) VALUES (?,?,?,?)');
+    await insUser.run('admin', hashPassword('admin123'), 'Administrateur', 'admin');
+    await insUser.run('secretaire', hashPassword('secret123'), 'Secrétaire', 'secretaire');
   }
 
-  const hasSettings = db.prepare('SELECT COUNT(*) AS n FROM settings').get().n;
+  const hasSettings = (await db.prepare('SELECT COUNT(*) AS n FROM settings').get()).n;
   if (hasSettings === 0) {
-    db.prepare(
+    await db.prepare(
       `INSERT INTO settings (id, entreprise, telephone, email, adresse, devise)
        VALUES (1, ?, ?, ?, ?, ?)`
     ).run(
@@ -170,82 +215,65 @@ function seed() {
     );
   }
 
-  // Jeu d'exemple repris du fichier Excel d'origine (pour demonstration).
-  const propCount = db.prepare('SELECT COUNT(*) AS n FROM properties').get().n;
+  const propCount = (await db.prepare('SELECT COUNT(*) AS n FROM properties').get()).n;
   if (propCount === 0) {
-    seedExampleData();
+    await seedExampleData();
   }
 }
 
-function seedExampleData() {
-  const tx = db.transaction(() => {
-    const owner = db
-      .prepare('INSERT INTO owners (nom_prenoms, contact) VALUES (?, ?)')
-      .run('BAHI DJEDJE LAURENT', '0758969275');
-    const ownerId = owner.lastInsertRowid;
+async function seedExampleData() {
+  const ownerId = (await db
+    .prepare('INSERT INTO owners (nom_prenoms, contact) VALUES (?, ?)')
+    .run('BAHI DJEDJE LAURENT', '0758969275')).lastInsertRowid;
 
-    const t1 = db
-      .prepare('INSERT INTO tenants (nom_prenoms, contact) VALUES (?, ?)')
-      .run("N'GUESSAN ANGE", '0151104104').lastInsertRowid;
-    const t2 = db
-      .prepare('INSERT INTO tenants (nom_prenoms, contact) VALUES (?, ?)')
-      .run('AFFESSY FRANCK', '0505660408').lastInsertRowid;
+  const t1 = (await db
+    .prepare('INSERT INTO tenants (nom_prenoms, contact) VALUES (?, ?)')
+    .run("N'GUESSAN ANGE", '0151104104')).lastInsertRowid;
+  const t2 = (await db
+    .prepare('INSERT INTO tenants (nom_prenoms, contact) VALUES (?, ?)')
+    .run('AFFESSY FRANCK', '0505660408')).lastInsertRowid;
 
-    const p1 = db
-      .prepare(
-        `INSERT INTO properties
-         (code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, part_commission, nombre_porte)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run('MB_P3_C150000_M05022023A1812338', ownerId, 'Maison basse', 3, 150000, 'ABIDJAN', 'YOPOUGON', 'MAROC', 20, 4)
-      .lastInsertRowid;
-    const p2 = db
-      .prepare(
-        `INSERT INTO properties
-         (code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, part_commission, nombre_porte)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run('MB_P4_C250000_M05022023A545690', ownerId, 'Maison basse', 4, 250000, 'ABIDJAN', 'COCODY', 'RIVIERA PALMERAIE', 10, 1)
-      .lastInsertRowid;
+  const insProp = db.prepare(
+    `INSERT INTO properties
+     (code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, part_commission, nombre_porte)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  );
+  const p1 = (await insProp.run('MB_P3_C150000_M05022023A1812338', ownerId, 'Maison basse', 3, 150000, 'ABIDJAN', 'YOPOUGON', 'MAROC', 20, 4)).lastInsertRowid;
+  const p2 = (await insProp.run('MB_P4_C250000_M05022023A545690', ownerId, 'Maison basse', 4, 250000, 'ABIDJAN', 'COCODY', 'RIVIERA PALMERAIE', 10, 1)).lastInsertRowid;
 
-    const s1 = db
-      .prepare(
-        `INSERT INTO subscriptions
-         (code, property_id, tenant_id, date_souscription, montant_loyer,
-          nombre_mois_caution, montant_caution, nombre_mois_avance, montant_avance,
-          autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run('S05022023A1013772', p1, t1, '2023-02-05', 150000, 2, 300000, 2, 300000, '', 0, '2023-02-05', '2023-02-05', 'Active')
-      .lastInsertRowid;
-    const s2 = db
-      .prepare(
-        `INSERT INTO subscriptions
-         (code, property_id, tenant_id, date_souscription, montant_loyer,
-          nombre_mois_caution, montant_caution, nombre_mois_avance, montant_avance,
-          autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run('S05022023A3370599', p2, t2, '2023-02-05', 250000, 2, 500000, 2, 500000, 'GARAGE', 10000, '2023-02-05', '2023-02-05', 'Active')
-      .lastInsertRowid;
+  const insSub = db.prepare(
+    `INSERT INTO subscriptions
+     (code, property_id, tenant_id, date_souscription, montant_loyer,
+      nombre_mois_caution, montant_caution, nombre_mois_avance, montant_avance,
+      autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  );
+  const s1 = (await insSub.run('S05022023A1013772', p1, t1, '2023-02-05', 150000, 2, 300000, 2, 300000, '', 0, '2023-02-05', '2023-02-05', 'Active')).lastInsertRowid;
+  const s2 = (await insSub.run('S05022023A3370599', p2, t2, '2023-02-05', 250000, 2, 500000, 2, 500000, 'GARAGE', 10000, '2023-02-05', '2023-02-05', 'Active')).lastInsertRowid;
 
-    const insPay = db.prepare(
-      `INSERT INTO payments
-       (code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-    );
-    let n = 1000;
-    const pay = (sub, prop, ten, montant, mois, annee) =>
-      insPay.run(`R0000${n++}`, sub, prop, ten, '2023-02-05', montant, montant, 0, mois, annee, 'Soldé');
-    pay(s1, p1, t1, 150000, 'Mars', 2023);
-    pay(s1, p1, t1, 150000, 'Mai', 2023);
-    pay(s1, p1, t1, 150000, 'Juin', 2023);
-    pay(s2, p2, t2, 250000, 'Mai', 2023);
-    pay(s2, p2, t2, 250000, 'Juin', 2023);
-  });
-  tx();
+  const insPay = db.prepare(
+    `INSERT INTO payments
+     (code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  );
+  let n = 1000;
+  const pay = (sub, prop, ten, montant, mois, annee) =>
+    insPay.run(`R0000${n++}`, sub, prop, ten, '2023-02-05', montant, montant, 0, mois, annee, 'Soldé');
+  await pay(s1, p1, t1, 150000, 'Mars', 2023);
+  await pay(s1, p1, t1, 150000, 'Mai', 2023);
+  await pay(s1, p1, t1, 150000, 'Juin', 2023);
+  await pay(s2, p2, t2, 250000, 'Mai', 2023);
+  await pay(s2, p2, t2, 250000, 'Juin', 2023);
 }
 
-seed();
+// Initialisation : creation du schema puis donnees initiales.
+// `ready` est attendu par le serveur avant d'accepter les requetes.
+async function init() {
+  try { await client.execute('PRAGMA foreign_keys = ON'); } catch (_) { /* ignore sur Turso */ }
+  await client.executeMultiple(SCHEMA_SQL);
+  await seed();
+}
 
-module.exports = { db, hashPassword, verifyPassword };
+const ready = init();
+
+module.exports = { db, ready, hashPassword, verifyPassword };

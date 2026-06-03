@@ -1,87 +1,91 @@
-# Mettre l'application en ligne (accessible depuis n'importe où)
+# Mettre l'application en ligne — GRATUITEMENT, sans perdre les données
 
-Ce guide explique comment héberger NOUVEL AFRIC sur Internet, pour y accéder
-depuis n'importe quel poste ou téléphone (pas seulement le réseau du bureau).
+Objectif : rendre NOUVEL AFRIC accessible depuis **n'importe quel téléphone ou
+ordinateur**, **gratuitement**, tout en **conservant les données** en sécurité.
 
-L'application est déjà **prête pour l'hébergement** :
-- HTTPS géré automatiquement par l'hébergeur ;
-- base de données **conservée** sur un disque persistant (vos données ne se perdent pas) ;
-- clé de sécurité des sessions générée automatiquement.
+## Comment ça marche (en 1 phrase)
+
+Les données sont stockées dans une **base en ligne gratuite (Turso)**, et
+l'application tourne sur un **hébergement gratuit (Render)**. Comme les données
+sont dans Turso, elles ne se perdent jamais, même si l'hébergement redémarre.
+
+> ℹ️ Seul petit inconvénient du gratuit : après ~15 min sans visite, la 1ʳᵉ page
+> peut mettre ~1 minute à s'ouvrir (l'hébergement « se réveille »). Ensuite c'est rapide.
 
 ---
 
-## Option A — Render (recommandée, la plus simple)
+## Étape 1 — Créer la base de données en ligne (Turso) — gratuit
 
-> Render lit le fichier `render.yaml` du projet et crée tout automatiquement.
+1. Aller sur **https://turso.tech** et créer un compte (connexion possible avec GitHub).
+2. Créer une base de données (**Create Database**) ; donner un nom, ex. `nouvel-afric`.
+   Choisir une région proche (ex. *Frankfurt / eu*).
+3. Une fois la base créée, récupérer **2 informations** (boutons dans le tableau de bord) :
+   - **URL de la base** — commence par `libsql://…` *(bouton « Connect » / « URL »)*
+   - **Jeton d'accès (auth token)** — une longue suite de caractères
+     *(bouton « Create Token » / « Tokens »)*
+4. **Garder ces 2 valeurs** sous la main pour l'étape 2.
 
-1. Créer un compte sur **https://render.com** (connexion possible avec GitHub).
+> 💻 *(Alternative en ligne de commande, facultatif)* — avec le CLI Turso :
+> ```bash
+> turso db create nouvel-afric
+> turso db show nouvel-afric --url        # -> TURSO_DATABASE_URL
+> turso db tokens create nouvel-afric     # -> TURSO_AUTH_TOKEN
+> ```
+
+---
+
+## Étape 2 — Mettre l'application en ligne (Render) — gratuit
+
+1. Créer un compte sur **https://render.com** (connexion avec GitHub recommandée).
 2. Cliquer sur **New +** → **Blueprint**.
-3. Choisir le dépôt **`gavoekoffi2/Logiciel-de-gestion-Nouvel-Afric`**
-   et la branche **`claude/practical-cray-gjRsH`** (ou `main` une fois fusionnée).
-4. Render détecte `render.yaml` et propose de créer le service **nouvel-afric**
-   avec un disque persistant. Cliquer sur **Apply**.
-5. Patienter quelques minutes (installation + démarrage).
-6. L'application est en ligne à une adresse du type
-   **`https://nouvel-afric.onrender.com`**. Se connecter avec `admin / admin123`.
-
-> 💡 Le plan **Starter (~7 $/mois)** est nécessaire pour le **disque persistant**
-> (indispensable pour ne pas perdre les données). Le plan gratuit fonctionne pour
-> tester, mais il s'endort après inactivité et **ne conserve pas** les données.
-
----
-
-## Option B — Railway (avec Docker)
-
-1. Créer un compte sur **https://railway.app**.
-2. **New Project** → **Deploy from GitHub repo** → choisir le dépôt.
-3. Railway construit l'image à partir du `Dockerfile`.
-4. Dans **Variables**, ajouter :
-   - `NODE_ENV` = `production`
-   - `SESSION_SECRET` = (une longue suite de caractères au hasard)
-   - `DB_PATH` = `/data/nouvelafric.db`
-5. Dans **Settings → Volumes**, ajouter un volume monté sur **`/data`**
-   (pour conserver la base de données).
-6. Générer un domaine public dans **Settings → Networking**.
+3. Choisir le dépôt **`Logiciel-de-gestion-Nouvel-Afric`** et la branche
+   **`claude/practical-cray-gjRsH`** (ou `main` une fois fusionnée).
+4. Render détecte `render.yaml` et affiche le service **nouvel-afric** (plan **Free**).
+5. Il demande de renseigner 2 variables — **coller les valeurs de l'étape 1** :
+   - `TURSO_DATABASE_URL` → l'URL `libsql://…`
+   - `TURSO_AUTH_TOKEN` → le jeton d'accès
+   *(la variable `SESSION_SECRET` est générée automatiquement)*
+6. Cliquer sur **Apply** et patienter quelques minutes.
+7. 🎉 L'application est en ligne, à une adresse comme **`https://nouvel-afric.onrender.com`**.
+   Se connecter avec **`admin` / `admin123`**.
 
 ---
 
-## Option C — Votre propre serveur / VPS
+## Étape 3 — Après la mise en ligne (important)
 
-Avec Docker :
-```bash
-docker build -t nouvel-afric .
-docker run -d -p 80:3000 \
-  -e NODE_ENV=production \
-  -e SESSION_SECRET="une-cle-secrete-longue" \
-  -v /chemin/vers/donnees:/data \
-  --restart unless-stopped \
-  nouvel-afric
-```
-
-Sans Docker (Node.js installé sur le serveur) :
-```bash
-npm install
-NODE_ENV=production SESSION_SECRET="une-cle-longue" npm start
-```
-(garder le processus actif avec un gestionnaire comme **pm2** : `pm2 start server.js --name nouvel-afric`)
+1. **Changer les mots de passe** par défaut → menu **Paramètres → Utilisateurs**.
+2. Renseigner les **coordonnées de l'entreprise** → menu **Paramètres**
+   (nom, téléphone, email, adresse) ; elles s'affichent sur les reçus et contrats.
 
 ---
 
-## Après la mise en ligne — à faire absolument
+## Variante gratuite : Koyeb (au lieu de Render)
 
-1. **Changer les mots de passe** par défaut (menu **Paramètres → Utilisateurs**).
-2. Renseigner les **coordonnées de l'entreprise** (Paramètres) — elles s'affichent
-   sur les reçus et les contrats.
-3. **Sauvegarder régulièrement** : télécharger une copie du fichier
-   `nouvelafric.db` (depuis le disque de l'hébergeur).
+1. Compte sur **https://koyeb.com** → **Create Web Service** → **GitHub** → choisir le dépôt.
+2. Build : *Buildpack* (Node) ou *Dockerfile*. Commande de démarrage : `npm start`.
+3. Dans **Environment variables**, ajouter :
+   `NODE_ENV=production`, `SESSION_SECRET=` (une longue suite au hasard),
+   `TURSO_DATABASE_URL=…`, `TURSO_AUTH_TOKEN=…`.
+4. Déployer ; Koyeb fournit une adresse publique.
 
 ---
 
-## Variables d'environnement utilisées
+## Sauvegarde des données
+
+Les données vivent dans **Turso**. Pour une copie de sécurité, on peut exporter
+la base depuis le tableau de bord Turso (ou `turso db dump nouvel-afric`).
+
+---
+
+## Variables d'environnement
 
 | Variable | Rôle | Exemple |
 |----------|------|---------|
-| `NODE_ENV` | Active le mode production (cookies HTTPS sécurisés) | `production` |
-| `SESSION_SECRET` | Clé de chiffrement des sessions (à garder secrète et stable) | une longue chaîne aléatoire |
-| `DB_PATH` | Emplacement de la base de données | `/data/nouvelafric.db` |
-| `PORT` | Port d'écoute (souvent imposé par l'hébergeur) | `3000` |
+| `TURSO_DATABASE_URL` | Adresse de la base en ligne | `libsql://nouvel-afric-xxx.turso.io` |
+| `TURSO_AUTH_TOKEN` | Jeton d'accès à la base | une longue chaîne |
+| `SESSION_SECRET` | Clé de sécurité des connexions (stable) | une longue chaîne aléatoire |
+| `NODE_ENV` | Mode production (cookies HTTPS sécurisés) | `production` |
+| `PORT` | Port d'écoute (imposé par l'hébergeur) | `3000` |
+
+> 🖥️ **En local** (sur votre ordinateur), aucune de ces variables n'est nécessaire :
+> l'application utilise automatiquement un simple fichier `data/nouvelafric.db`.

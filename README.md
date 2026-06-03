@@ -76,17 +76,22 @@ les autres s'y connectent avec leur navigateur (Chrome, Edge, Firefox…).
 
 ---
 
-## 🌍 Mettre l'application en ligne
+## 🌍 Mettre l'application en ligne (gratuitement)
 
 Pour un accès **depuis n'importe où** (et pas seulement le réseau du bureau),
-voir le guide détaillé : [`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md).
-L'application est prête pour l'hébergement (HTTPS, base de données persistante, sessions sécurisées).
+l'application peut être hébergée **gratuitement**, avec les données conservées
+dans une base en ligne (**Turso**, compatible SQLite). Guide pas à pas :
+[`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md).
+
+En pratique : on définit les variables `TURSO_DATABASE_URL` et `TURSO_AUTH_TOKEN`,
+et les données vont automatiquement dans la base en ligne (rien d'autre à changer).
 
 ## 💾 Sauvegarde des données
 
-Toutes les données sont dans **un seul fichier** : `data/nouvelafric.db`.
-Pour faire une sauvegarde, il suffit de **copier ce fichier** (sur une clé USB, un disque, le cloud…).
-Pour restaurer, on remet le fichier à sa place.
+- **En local** : toutes les données sont dans **un seul fichier** `data/nouvelafric.db` —
+  il suffit de **copier ce fichier** pour sauvegarder (et de le remettre pour restaurer).
+- **En ligne (Turso)** : exporter la base depuis le tableau de bord Turso
+  (ou `turso db dump`).
 
 ---
 
@@ -99,7 +104,9 @@ Variables d'environnement possibles au démarrage :
 | `PORT` | Port d'écoute | `3000` |
 | `HOST` | Adresse d'écoute | `0.0.0.0` (tout le réseau) |
 | `SESSION_SECRET` | Clé de sécurité des sessions | générée au démarrage |
-| `DB_PATH` | Emplacement de la base de données | `data/nouvelafric.db` |
+| `DB_PATH` | Emplacement du fichier de base (mode local) | `data/nouvelafric.db` |
+| `TURSO_DATABASE_URL` | Active la base en ligne Turso (sinon fichier local) | *(non défini)* |
+| `TURSO_AUTH_TOKEN` | Jeton d'accès à la base Turso | *(non défini)* |
 
 Exemple (Windows) : `set PORT=8080 && npm start`
 Exemple (Linux/Mac) : `PORT=8080 npm start`
@@ -109,7 +116,8 @@ Exemple (Linux/Mac) : `PORT=8080 npm start`
 ## 🧰 Technologie
 
 - **Serveur** : Node.js + Express
-- **Base de données** : SQLite (un simple fichier, aucune installation de serveur de base de données)
+- **Base de données** : libSQL / SQLite — un simple fichier en local, ou une base
+  en ligne **Turso** (gratuite) pour un accès depuis Internet, sans changer le code
 - **Interface** : HTML / CSS / JavaScript (aucune dépendance lourde, aucune compilation)
 
 L'ensemble est volontairement **simple à maintenir et à héberger** (un PC du bureau, un petit

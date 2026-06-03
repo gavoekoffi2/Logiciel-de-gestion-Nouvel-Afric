@@ -30,33 +30,39 @@ function requireRole(role) {
   };
 }
 
-router.post('/login', (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Identifiant et mot de passe requis' });
-  }
-  const user = db
-    .prepare('SELECT * FROM users WHERE username = ? AND actif = 1')
-    .get(String(username).trim().toLowerCase());
+router.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Identifiant et mot de passe requis' });
+    }
+    const user = await db
+      .prepare('SELECT * FROM users WHERE username = ? AND actif = 1')
+      .get(String(username).trim().toLowerCase());
 
-  if (!user || !verifyPassword(password, user.password)) {
-    return res.status(401).json({ error: 'Identifiant ou mot de passe incorrect' });
-  }
+    if (!user || !verifyPassword(password, user.password)) {
+      return res.status(401).json({ error: 'Identifiant ou mot de passe incorrect' });
+    }
 
-  req.session.userId = user.id;
-  req.session.role = user.role;
-  res.json({ user: publicUser(user) });
+    req.session.userId = user.id;
+    req.session.role = user.role;
+    res.json({ user: publicUser(user) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 router.post('/logout', (req, res) => {
-  req.session.destroy(() => res.json({ ok: true }));
+  req.session = null; // cookie-session : on efface la session
+  res.json({ ok: true });
 });
 
-router.get('/me', (req, res) => {
+router.get('/me', async (req, res) => {
   if (!req.session || !req.session.userId) {
     return res.status(401).json({ error: 'Non authentifié' });
   }
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
   if (!user) return res.status(401).json({ error: 'Non authentifié' });
   res.json({ user: publicUser(user) });
 });

@@ -194,6 +194,26 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- Reversements aux proprietaires : l'agence encaisse les loyers, preleve sa
+-- commission (part_commission du bien) et reverse le net au proprietaire.
+-- Chaque reglement encaisse est rattache (payout_id) au reversement qui le
+-- couvre, ce qui interdit tout double reversement.
+CREATE TABLE IF NOT EXISTS payouts (
+  id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id         INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+  code               TEXT UNIQUE NOT NULL,
+  owner_id           INTEGER REFERENCES owners(id) ON DELETE SET NULL,
+  date               TEXT,
+  periode_debut      TEXT,
+  periode_fin        TEXT,
+  nombre_paiements   INTEGER NOT NULL DEFAULT 0,
+  montant_loyers     INTEGER NOT NULL DEFAULT 0,
+  montant_commission INTEGER NOT NULL DEFAULT 0,
+  montant_net        INTEGER NOT NULL DEFAULT 0,
+  note               TEXT,
+  created_at         TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS payments (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   company_id      INTEGER REFERENCES companies(id) ON DELETE CASCADE,
@@ -208,9 +228,16 @@ CREATE TABLE IF NOT EXISTS payments (
   mois_concerne   TEXT,
   annee_concernee INTEGER,
   statut          TEXT NOT NULL DEFAULT 'Soldé',  -- 'Soldé' | 'Non soldé'
+  payout_id       INTEGER REFERENCES payouts(id) ON DELETE SET NULL,  -- reversement couvrant ce loyer
   created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+`;
+
+// Index crees APRES les migrations : certains portent sur des colonnes ajoutees
+// par une migration (company_id, payout_id) et ne peuvent donc etre crees qu'une
+// fois la colonne presente. CREATE INDEX IF NOT EXISTS reste idempotent.
+const INDEXES_SQL = `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_users_company  ON users(company_id);
 CREATE INDEX IF NOT EXISTS idx_owners_company ON owners(company_id);
@@ -223,6 +250,9 @@ CREATE INDEX IF NOT EXISTS idx_sub_prop       ON subscriptions(property_id);
 CREATE INDEX IF NOT EXISTS idx_sub_tenant     ON subscriptions(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_pay_sub        ON payments(subscription_id);
 CREATE INDEX IF NOT EXISTS idx_pay_periode    ON payments(annee_concernee, mois_concerne);
+CREATE INDEX IF NOT EXISTS idx_pay_payout     ON payments(payout_id);
+CREATE INDEX IF NOT EXISTS idx_payouts_company ON payouts(company_id);
+CREATE INDEX IF NOT EXISTS idx_payouts_owner   ON payouts(owner_id);
 `;
 
 // Migrations pour les bases deja existantes (ajout de colonnes). Chaque ALTER
@@ -237,6 +267,7 @@ const MIGRATIONS = [
   "ALTER TABLE properties ADD COLUMN company_id INTEGER",
   "ALTER TABLE subscriptions ADD COLUMN company_id INTEGER",
   "ALTER TABLE payments ADD COLUMN company_id INTEGER",
+  "ALTER TABLE payments ADD COLUMN payout_id INTEGER",
 ];
 
 // ---------------------------------------------------------------------------
@@ -466,6 +497,9 @@ async function init() {
   for (const sql of MIGRATIONS) {
     try { await client.execute(sql); } catch (_) { /* colonne deja presente */ }
   }
+  // Les index sont crees apres les migrations (cf. INDEXES_SQL) pour qu'ils
+  // puissent porter sur des colonnes ajoutees par une migration.
+  await client.executeMultiple(INDEXES_SQL);
   await seedPlatform();
   await seedSuperAdmin();
   await migrateLegacyData();

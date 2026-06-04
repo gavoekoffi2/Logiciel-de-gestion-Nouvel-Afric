@@ -30,6 +30,7 @@ export async function render() {
         ${stat('ic-blue', 'money', fmt.money(d.total_caution), 'Total cautions')}
         ${stat('ic-amber', 'money', fmt.money(d.total_avance), 'Total avances')}
         ${stat('ic-red', 'payments', fmt.money(d.impayes_montant), 'Impayés (' + d.impayes_nombre + ')')}
+        ${stat('ic-brand', 'owners', fmt.money(d.reste_a_reverser || 0), 'À reverser aux propriétaires')}
       </div>
 
       <div class="grid" style="grid-template-columns:1.1fr 1fr;align-items:start;margin-top:18px" id="bottomGrid">

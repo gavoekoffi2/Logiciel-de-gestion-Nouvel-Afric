@@ -572,6 +572,159 @@ router.post('/payments/bulk', wrap(async (req, res) => {
 }));
 
 // ===========================================================================
+// REVERSEMENTS AUX PROPRIETAIRES
+//
+// Principe : l'agence encaisse les loyers (table payments), preleve sa commission
+// (part_commission, definie par BIEN) et reverse le net au proprietaire. La
+// commission est calculee paiement par paiement (chaque bien peut avoir un taux
+// different). Un loyer deja reverse (payout_id non nul) n'est jamais represente.
+// ===========================================================================
+const PAYOUT_SELECT = `
+  SELECT v.*, o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
+         o.email AS owner_email, o.adresse AS owner_adresse
+  FROM payouts v
+  LEFT JOIN owners o ON o.id = v.owner_id
+`;
+
+// Detail (par paiement) des loyers encaisses NON encore reverses pour un
+// proprietaire ; renvoie aussi les totaux (loyers, commission, net).
+async function dueForOwner(companyId, ownerId) {
+  const lignes = await db.prepare(
+    `SELECT r.id, r.code, r.date, r.mois_concerne, r.annee_concernee, r.montant_paye,
+            p.code AS property_code, p.part_commission, t.nom_prenoms AS tenant_nom
+     FROM payments r
+     JOIN properties p ON p.id = r.property_id
+     LEFT JOIN tenants t ON t.id = r.tenant_id
+     WHERE r.company_id = ? AND p.owner_id = ? AND r.payout_id IS NULL AND r.montant_paye > 0
+     ORDER BY r.annee_concernee, r.id`
+  ).all(companyId, ownerId);
+  const detail = lignes.map((l) => {
+    const commission = Math.round((l.montant_paye * (l.part_commission || 0)) / 100);
+    return { ...l, commission, net: l.montant_paye - commission };
+  });
+  const totals = detail.reduce(
+    (a, l) => ({ loyers: a.loyers + l.montant_paye, commission: a.commission + l.commission, net: a.net + l.net }),
+    { loyers: 0, commission: 0, net: 0 }
+  );
+  return { lignes: detail, totals };
+}
+
+// Liste des proprietaires ayant des loyers encaisses a reverser (vue principale).
+router.get('/payouts/due', wrap(async (req, res) => {
+  const rows = await db.prepare(
+    `SELECT o.id AS owner_id, o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
+            COUNT(r.id) AS nombre_paiements,
+            COALESCE(SUM(r.montant_paye), 0) AS loyers,
+            COALESCE(SUM(ROUND(r.montant_paye * COALESCE(p.part_commission, 0) / 100.0)), 0) AS commission
+     FROM payments r
+     JOIN properties p ON p.id = r.property_id
+     JOIN owners o ON o.id = p.owner_id
+     WHERE r.company_id = ? AND r.payout_id IS NULL AND r.montant_paye > 0
+     GROUP BY o.id, o.nom_prenoms, o.contact
+     HAVING loyers > 0
+     ORDER BY o.nom_prenoms COLLATE NOCASE`
+  ).all(req.companyId);
+  rows.forEach((x) => { x.net = x.loyers - x.commission; });
+  res.json(rows);
+}));
+
+// Detail du du pour un proprietaire (avant de valider le reversement).
+router.get('/payouts/due/:ownerId', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const owner = await db.prepare('SELECT * FROM owners WHERE id = ? AND company_id = ?').get(toInt(req.params.ownerId), cid);
+  if (!owner) return res.status(404).json({ error: 'Propriétaire introuvable.' });
+  const { lignes, totals } = await dueForOwner(cid, owner.id);
+  res.json({
+    owner: { id: owner.id, nom_prenoms: owner.nom_prenoms, contact: owner.contact, email: owner.email, adresse: owner.adresse },
+    lignes, totals, nombre_paiements: lignes.length,
+  });
+}));
+
+// Historique des reversements effectues.
+router.get('/payouts', wrap(async (req, res) => {
+  const q = clean(req.query.q);
+  let rows = await db.prepare(`${PAYOUT_SELECT} WHERE v.company_id = ? ORDER BY v.id DESC`).all(req.companyId);
+  if (q) {
+    const s = q.toLowerCase();
+    rows = rows.filter((r) => [r.code, r.owner_nom].some((v) => (v || '').toLowerCase().includes(s)));
+  }
+  res.json(rows);
+}));
+
+// Detail d'un reversement (avec les loyers couverts) — pour l'impression du releve.
+router.get('/payouts/:id', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const id = toInt(req.params.id);
+  const payout = await db.prepare(`${PAYOUT_SELECT} WHERE v.id = ? AND v.company_id = ?`).get(id, cid);
+  if (!payout) return res.status(404).json({ error: 'Reversement introuvable.' });
+  const lignes = await db.prepare(
+    `SELECT r.id, r.code, r.date, r.mois_concerne, r.annee_concernee, r.montant_paye,
+            p.code AS property_code, p.part_commission, t.nom_prenoms AS tenant_nom
+     FROM payments r
+     LEFT JOIN properties p ON p.id = r.property_id
+     LEFT JOIN tenants t ON t.id = r.tenant_id
+     WHERE r.payout_id = ? AND r.company_id = ?
+     ORDER BY r.annee_concernee, r.id`
+  ).all(id, cid);
+  lignes.forEach((l) => {
+    l.commission = Math.round((l.montant_paye * (l.part_commission || 0)) / 100);
+    l.net = l.montant_paye - l.commission;
+  });
+  payout.lignes = lignes;
+  res.json(payout);
+}));
+
+// Cree un reversement pour un proprietaire (couvre par defaut TOUS ses loyers
+// encaisses non encore reverses ; un sous-ensemble payment_ids est accepte).
+router.post('/payouts', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const ownerId = toInt(req.body.owner_id);
+  const owner = await db.prepare('SELECT * FROM owners WHERE id = ? AND company_id = ?').get(ownerId, cid);
+  if (!owner) return res.status(400).json({ error: 'Veuillez sélectionner un propriétaire valide.' });
+
+  const { lignes } = await dueForOwner(cid, ownerId);
+  let selected = lignes;
+  if (Array.isArray(req.body.payment_ids) && req.body.payment_ids.length) {
+    const set = new Set(req.body.payment_ids.map(toInt));
+    selected = lignes.filter((l) => set.has(l.id));
+  }
+  if (selected.length === 0) {
+    return res.status(400).json({ error: 'Aucun loyer encaissé à reverser pour ce propriétaire.' });
+  }
+
+  const loyers = selected.reduce((a, l) => a + l.montant_paye, 0);
+  const commission = selected.reduce((a, l) => a + l.commission, 0);
+  const net = loyers - commission;
+  const dates = selected.map((l) => l.date).filter(Boolean).sort();
+  const date = clean(req.body.date) || new Date().toISOString().slice(0, 10);
+
+  const code = await genCode('payouts', 'V', date);
+  const payoutId = (await db.prepare(
+    `INSERT INTO payouts
+       (company_id, code, owner_id, date, periode_debut, periode_fin,
+        nombre_paiements, montant_loyers, montant_commission, montant_net, note)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    cid, code, ownerId, date, dates[0] || null, dates[dates.length - 1] || null,
+    selected.length, loyers, commission, net, clean(req.body.note) || null
+  )).lastInsertRowid;
+
+  for (const l of selected) {
+    await db.prepare('UPDATE payments SET payout_id = ? WHERE id = ? AND company_id = ?').run(payoutId, l.id, cid);
+  }
+  res.json(await db.prepare(`${PAYOUT_SELECT} WHERE v.id = ?`).get(payoutId));
+}));
+
+// Annule un reversement : les loyers redeviennent « a reverser ».
+router.delete('/payouts/:id', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const id = toInt(req.params.id);
+  await db.prepare('UPDATE payments SET payout_id = NULL WHERE payout_id = ? AND company_id = ?').run(id, cid);
+  await db.prepare('DELETE FROM payouts WHERE id = ? AND company_id = ?').run(id, cid);
+  res.json({ ok: true });
+}));
+
+// ===========================================================================
 // TABLEAU DE BORD
 // ===========================================================================
 router.get('/dashboard', wrap(async (req, res) => {
@@ -584,7 +737,7 @@ router.get('/dashboard', wrap(async (req, res) => {
 
   const [
     proprietaires, locataires, maisons, occupees,
-    caution, avance, loyer, attendu, encaisseMois, impayesNb, impayesMt,
+    caution, avance, loyer, attendu, encaisseMois, impayesNb, impayesMt, aReverser,
     derniers_paiements, allProps,
   ] = await Promise.all([
     one('SELECT COUNT(*) n FROM owners WHERE company_id = ?', cid),
@@ -598,6 +751,9 @@ router.get('/dashboard', wrap(async (req, res) => {
     one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE company_id = ? AND mois_concerne=? AND annee_concernee=?', cid, moisCourant, anneeCourante),
     one("SELECT COUNT(*) n FROM payments WHERE company_id = ? AND statut='Non soldé'", cid),
     one("SELECT COALESCE(SUM(reste_a_payer),0) s FROM payments WHERE company_id = ? AND statut='Non soldé'", cid),
+    one(`SELECT COALESCE(SUM(r.montant_paye - ROUND(r.montant_paye * COALESCE(p.part_commission,0) / 100.0)), 0) s
+         FROM payments r JOIN properties p ON p.id = r.property_id
+         WHERE r.company_id = ? AND r.payout_id IS NULL AND r.montant_paye > 0`, cid),
     db.prepare(`${PAY_SELECT} WHERE r.company_id = ? ORDER BY r.id DESC LIMIT 6`).all(cid),
     db.prepare(`${PROPERTY_SELECT} WHERE p.company_id = ?`).all(cid),
   ]);
@@ -619,6 +775,7 @@ router.get('/dashboard', wrap(async (req, res) => {
     loyer_encaisse_mois: encaisseMois.s,
     impayes_nombre: impayesNb.n,
     impayes_montant: impayesMt.s,
+    reste_a_reverser: aReverser.s,
   };
   data.reste_attendu_mois = Math.max(0, data.loyer_attendu - data.loyer_encaisse_mois);
   data.derniers_paiements = derniers_paiements;
@@ -761,16 +918,18 @@ subscriptionRouter.post('/request', wrap(async (req, res) => {
 // ===========================================================================
 
 // Tables metier exportees, dans l'ordre des dependances (parent -> enfant).
-const DATA_TABLES = ['owners', 'tenants', 'properties', 'subscriptions', 'payments'];
+// payouts est place avant payments car payments.payout_id y fait reference.
+const DATA_TABLES = ['owners', 'tenants', 'properties', 'subscriptions', 'payouts', 'payments'];
 
 dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
   const cid = req.companyId;
-  const [company, owners, tenants, properties, subscriptions, payments] = await Promise.all([
+  const [company, owners, tenants, properties, subscriptions, payouts, payments] = await Promise.all([
     db.prepare('SELECT nom, telephone, email, adresse, devise FROM companies WHERE id = ?').get(cid),
     db.prepare('SELECT * FROM owners WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM tenants WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM properties WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM subscriptions WHERE company_id = ? ORDER BY id').all(cid),
+    db.prepare('SELECT * FROM payouts WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM payments WHERE company_id = ? ORDER BY id').all(cid),
   ]);
 
@@ -779,7 +938,7 @@ dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
     version: 1,
     exporte_le: new Date().toISOString(),
     entreprise: company || null,
-    donnees: { owners, tenants, properties, subscriptions, payments },
+    donnees: { owners, tenants, properties, subscriptions, payouts, payments },
   };
 
   const stamp = new Date().toISOString().slice(0, 10);
@@ -802,9 +961,10 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const tenants = list('tenants');
   const properties = list('properties');
   const subscriptions = list('subscriptions');
+  const payouts = list('payouts');
   const payments = list('payments');
 
-  if (!owners.length && !tenants.length && !properties.length && !subscriptions.length && !payments.length) {
+  if (![owners, tenants, properties, subscriptions, payouts, payments].some((a) => a.length)) {
     return res.status(400).json({ error: 'Fichier de sauvegarde vide ou invalide.' });
   }
 
@@ -823,7 +983,8 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const tenantMap = new Map();
   const propertyMap = new Map();
   const subscriptionMap = new Map();
-  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payments: 0 };
+  const payoutMap = new Map();
+  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payouts: 0, payments: 0 };
 
   for (const o of owners) {
     const id = (await db.prepare(
@@ -878,18 +1039,35 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
     counts.subscriptions++;
   }
 
+  for (const v of payouts) {
+    const code = await uniqueCode('payouts', 'V', v.code);
+    const id = (await db.prepare(
+      `INSERT INTO payouts
+       (company_id, code, owner_id, date, periode_debut, periode_fin,
+        nombre_paiements, montant_loyers, montant_commission, montant_net, note)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      cid, code, ownerMap.get(v.owner_id) || null,
+      clean(v.date) || null, clean(v.periode_debut) || null, clean(v.periode_fin) || null,
+      toInt(v.nombre_paiements), toInt(v.montant_loyers), toInt(v.montant_commission), toInt(v.montant_net),
+      clean(v.note) || null
+    )).lastInsertRowid;
+    if (v.id != null) payoutMap.set(v.id, id);
+    counts.payouts++;
+  }
+
   for (const p of payments) {
     const code = await uniqueCode('payments', 'R', p.code);
     await db.prepare(
       `INSERT INTO payments
-       (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+       (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut, payout_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       cid, code, subscriptionMap.get(p.subscription_id) || null,
       propertyMap.get(p.property_id) || null, tenantMap.get(p.tenant_id) || null,
       clean(p.date) || null, toInt(p.montant_a_payer), toInt(p.montant_paye), toInt(p.reste_a_payer),
       clean(p.mois_concerne), p.annee_concernee != null ? toInt(p.annee_concernee) : null,
-      clean(p.statut) || 'Soldé'
+      clean(p.statut) || 'Soldé', payoutMap.get(p.payout_id) || null
     );
     counts.payments++;
   }

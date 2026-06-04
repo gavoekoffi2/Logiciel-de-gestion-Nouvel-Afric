@@ -61,6 +61,12 @@ Reste à payer, Mois concerné, Année concernée, Statut (Soldé/Non soldé), S
 - **Anti-doublon** sur l'encaissement multiple (un même loyer ne peut être enregistré deux fois
   pour la même période).
 - Devise et coordonnées de l'entreprise **paramétrables**.
+- **Reversement aux propriétaires** : pour chaque propriétaire, calcul automatique du net à
+  reverser (loyers encaissés − commission de l'agence, taux défini par bien), suivi des
+  reversements effectués et **relevé de reversement imprimable**. Un loyer déjà reversé n'est
+  jamais représenté (pas de double reversement).
+- **Sauvegarde / restauration** : export de toutes les données de l'entreprise dans un fichier
+  et réimport (fusion ou remplacement).
 
 ## 5. Données d'exemple
 

@@ -1,5 +1,8 @@
 import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, store, pageHeader, openModal, downloadJSON, fmt } from '../core.js';
 
+// Libellés lisibles des rôles d'entreprise.
+const RLAB = { admin: 'Administrateur', assistant: 'Assistant', secretaire: 'Secrétaire' };
+
 // Convertit un fichier image en data URL ; redimensionne les images matricielles
 // (max 256 px) pour garder un logo leger. Les SVG sont conserves tels quels.
 function fileToLogoDataURL(file) {
@@ -125,7 +128,7 @@ export async function render() {
       columns: [
         { label: 'E-mail', render: (u) => `<b>${escapeHtml(u.email || '—')}</b>` },
         { label: 'Nom', render: (u) => escapeHtml(u.nom || '—') },
-        { label: 'Rôle', render: (u) => badge(u.role === 'admin' ? 'Administrateur' : 'Secrétaire', u.role === 'admin' ? 'blue' : 'gray') },
+        { label: 'Rôle', render: (u) => badge(RLAB[u.role] || u.role, u.role === 'admin' ? 'blue' : (u.role === 'assistant' ? 'amber' : 'gray')) },
         { label: 'État', render: (u) => badge(u.actif ? 'Actif' : 'Désactivé', u.actif ? 'green' : 'red') },
       ],
       rows: users,
@@ -146,7 +149,7 @@ export async function render() {
           : [{ name: 'email', label: 'E-mail de connexion', required: true, col: 2, hint: 'Servira à se connecter.' }]),
         { name: 'nom', label: 'Nom complet', col: 2 },
         { name: 'role', label: 'Rôle', type: 'select', options: [
-          { value: 'secretaire', label: 'Secrétaire' }, { value: 'admin', label: 'Administrateur' }] },
+          { value: 'secretaire', label: 'Secrétaire' }, { value: 'assistant', label: 'Assistant' }, { value: 'admin', label: 'Administrateur' }] },
         { name: 'password', label: row ? 'Nouveau mot de passe' : 'Mot de passe', required: !row,
           hint: row ? 'Laisser vide pour ne pas changer.' : '' },
         ...(row ? [{ name: 'actif', label: 'Compte actif', type: 'select', options: [

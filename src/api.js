@@ -114,6 +114,20 @@ function monthsUntilNow(startYMD) {
   return out;
 }
 
+// Roles possibles AU SEIN d'une entreprise (le super-admin est hors entreprise).
+const COMPANY_ROLES = ['admin', 'secretaire', 'assistant'];
+const normRole = (r) => (COMPANY_ROLES.includes(clean(r)) ? clean(r) : 'secretaire');
+
+// Journal d'activite : enregistre QUI fait QUOI. Ne doit JAMAIS faire echouer
+// l'action metier (toute erreur d'ecriture du journal est avalee).
+async function logAction(req, action, entity, label) {
+  try {
+    await db.prepare(
+      'INSERT INTO audit_log (company_id, user_id, user_nom, action, entity, label) VALUES (?,?,?,?,?,?)'
+    ).run(req.companyId || null, req.userId || null, req.userNom || null, action, entity, clean(label) || null);
+  } catch (e) { console.error('audit_log:', e.message); }
+}
+
 // ===========================================================================
 // PROPRIETAIRES
 // ===========================================================================
@@ -161,6 +175,7 @@ router.post('/owners', wrap(async (req, res) => {
   const info = await db.prepare(
     'INSERT INTO owners (company_id, nom_prenoms, contact, email, adresse, type_logement, pieces_logement) VALUES (?,?,?,?,?,?,?)'
   ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, clean(req.body.type_logement), clean(req.body.pieces_logement));
+  await logAction(req, 'Création', 'Propriétaire', p.nom_prenoms);
   res.json(await db.prepare('SELECT * FROM owners WHERE id = ?').get(info.lastInsertRowid));
 }));
 
@@ -173,11 +188,15 @@ router.put('/owners/:id', wrap(async (req, res) => {
   await db.prepare(
     'UPDATE owners SET nom_prenoms=?, contact=?, email=?, adresse=?, type_logement=?, pieces_logement=? WHERE id=? AND company_id=?'
   ).run(p.nom_prenoms, p.contact, p.email, p.adresse, clean(req.body.type_logement), clean(req.body.pieces_logement), id, cid);
+  await logAction(req, 'Modification', 'Propriétaire', p.nom_prenoms);
   res.json(await db.prepare('SELECT * FROM owners WHERE id = ? AND company_id = ?').get(id, cid));
 }));
 
 router.delete('/owners/:id', wrap(async (req, res) => {
-  await db.prepare('DELETE FROM owners WHERE id = ? AND company_id = ?').run(toInt(req.params.id), req.companyId);
+  const id = toInt(req.params.id);
+  const row = await db.prepare('SELECT nom_prenoms FROM owners WHERE id = ? AND company_id = ?').get(id, req.companyId);
+  await db.prepare('DELETE FROM owners WHERE id = ? AND company_id = ?').run(id, req.companyId);
+  if (row) await logAction(req, 'Suppression', 'Propriétaire', row.nom_prenoms);
   res.json({ ok: true });
 }));
 
@@ -209,6 +228,7 @@ router.post('/tenants', wrap(async (req, res) => {
   const info = await db.prepare(
     'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution) VALUES (?,?,?,?,?,?)'
   ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution));
+  await logAction(req, 'Création', 'Locataire', p.nom_prenoms);
   res.json(await db.prepare('SELECT * FROM tenants WHERE id = ?').get(info.lastInsertRowid));
 }));
 
@@ -221,11 +241,15 @@ router.put('/tenants/:id', wrap(async (req, res) => {
   await db.prepare(
     'UPDATE tenants SET nom_prenoms=?, contact=?, email=?, adresse=?, caution=? WHERE id=? AND company_id=?'
   ).run(p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), id, cid);
+  await logAction(req, 'Modification', 'Locataire', p.nom_prenoms);
   res.json(await db.prepare('SELECT * FROM tenants WHERE id = ? AND company_id = ?').get(id, cid));
 }));
 
 router.delete('/tenants/:id', wrap(async (req, res) => {
-  await db.prepare('DELETE FROM tenants WHERE id = ? AND company_id = ?').run(toInt(req.params.id), req.companyId);
+  const id = toInt(req.params.id);
+  const row = await db.prepare('SELECT nom_prenoms FROM tenants WHERE id = ? AND company_id = ?').get(id, req.companyId);
+  await db.prepare('DELETE FROM tenants WHERE id = ? AND company_id = ?').run(id, req.companyId);
+  if (row) await logAction(req, 'Suppression', 'Locataire', row.nom_prenoms);
   res.json({ ok: true });
 }));
 
@@ -303,6 +327,7 @@ router.post('/properties', wrap(async (req, res) => {
      (company_id, code, owner_id, type_construction, nombre_piece, designation, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
      VALUES (@company_id,@code,@owner_id,@type_construction,@nombre_piece,@designation,@cout_loyer,@ville,@commune,@quartier,@observation,@part_commission,@nombre_porte)`
   ).run({ company_id: cid, code, ...p });
+  await logAction(req, 'Création', 'Bien', code);
   res.json(await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ?`).get(info.lastInsertRowid));
 }));
 
@@ -319,7 +344,9 @@ router.put('/properties/:id', wrap(async (req, res) => {
        observation=@observation, part_commission=@part_commission, nombre_porte=@nombre_porte
      WHERE id=@id AND company_id=@company_id`
   ).run({ id, company_id: cid, ...p });
-  res.json(await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ? AND p.company_id = ?`).get(id, cid));
+  const updated = await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ? AND p.company_id = ?`).get(id, cid);
+  await logAction(req, 'Modification', 'Bien', updated && updated.code);
+  res.json(updated);
 }));
 
 router.delete('/properties/:id', wrap(async (req, res) => {
@@ -327,7 +354,9 @@ router.delete('/properties/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
   const sub = await db.prepare("SELECT 1 FROM subscriptions WHERE property_id = ? AND company_id = ? AND statut='Active'").get(id, cid);
   if (sub) return res.status(400).json({ error: 'Impossible de supprimer : ce bien a une souscription active.' });
+  const row = await db.prepare('SELECT code FROM properties WHERE id = ? AND company_id = ?').get(id, cid);
   await db.prepare('DELETE FROM properties WHERE id = ? AND company_id = ?').run(id, cid);
+  if (row) await logAction(req, 'Suppression', 'Bien', row.code);
   res.json({ ok: true });
 }));
 
@@ -417,6 +446,7 @@ router.post('/subscriptions', wrap(async (req, res) => {
       @montant_caution,@nombre_mois_avance,@montant_avance,@nombre_mois_garantie,@montant_garantie,
       @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@statut)`
   ).run({ company_id: cid, code, ...s });
+  await logAction(req, 'Création', 'Souscription', code);
   res.json(await db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(info.lastInsertRowid));
 }));
 
@@ -436,11 +466,16 @@ router.put('/subscriptions/:id', wrap(async (req, res) => {
        date_debut_paiement=@date_debut_paiement, statut=@statut
      WHERE id=@id AND company_id=@company_id`
   ).run({ id, company_id: cid, ...s });
-  res.json(await db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(id, cid));
+  const updated = await db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(id, cid);
+  await logAction(req, 'Modification', 'Souscription', updated && updated.code);
+  res.json(updated);
 }));
 
 router.delete('/subscriptions/:id', wrap(async (req, res) => {
-  await db.prepare('DELETE FROM subscriptions WHERE id = ? AND company_id = ?').run(toInt(req.params.id), req.companyId);
+  const id = toInt(req.params.id);
+  const row = await db.prepare('SELECT code FROM subscriptions WHERE id = ? AND company_id = ?').get(id, req.companyId);
+  await db.prepare('DELETE FROM subscriptions WHERE id = ? AND company_id = ?').run(id, req.companyId);
+  if (row) await logAction(req, 'Suppression', 'Souscription', row.code);
   res.json({ ok: true });
 }));
 
@@ -585,6 +620,7 @@ router.post('/payments', wrap(async (req, res) => {
      VALUES (@company_id,@code,@subscription_id,@property_id,@tenant_id,@date,@montant_a_payer,@montant_paye,
       @reste_a_payer,@mois_concerne,@annee_concernee,@statut)`
   ).run({ company_id: cid, code, ...r });
+  await logAction(req, 'Création', 'Règlement', `${code} (${r.mois_concerne || ''} ${r.annee_concernee || ''})`.trim());
   res.json(await db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(info.lastInsertRowid));
 }));
 
@@ -601,11 +637,16 @@ router.put('/payments/:id', wrap(async (req, res) => {
        mois_concerne=@mois_concerne, annee_concernee=@annee_concernee, statut=@statut
      WHERE id=@id AND company_id=@company_id`
   ).run({ id, company_id: cid, ...r });
-  res.json(await db.prepare(`${PAY_SELECT} WHERE r.id = ? AND r.company_id = ?`).get(id, cid));
+  const updated = await db.prepare(`${PAY_SELECT} WHERE r.id = ? AND r.company_id = ?`).get(id, cid);
+  await logAction(req, 'Modification', 'Règlement', updated && updated.code);
+  res.json(updated);
 }));
 
 router.delete('/payments/:id', wrap(async (req, res) => {
-  await db.prepare('DELETE FROM payments WHERE id = ? AND company_id = ?').run(toInt(req.params.id), req.companyId);
+  const id = toInt(req.params.id);
+  const row = await db.prepare('SELECT code FROM payments WHERE id = ? AND company_id = ?').get(id, req.companyId);
+  await db.prepare('DELETE FROM payments WHERE id = ? AND company_id = ?').run(id, req.companyId);
+  if (row) await logAction(req, 'Suppression', 'Règlement', row.code);
   res.json({ ok: true });
 }));
 
@@ -638,6 +679,7 @@ router.post('/payments/bulk', wrap(async (req, res) => {
       sub.montant_loyer, sub.montant_loyer, 0, mois, annee, 'Soldé');
     crees++;
   }
+  if (crees > 0) await logAction(req, 'Création', 'Règlement', `Encaissement du mois : ${crees} loyer(s) — ${mois} ${annee}`);
   res.json({ ok: true, crees, ignores });
 }));
 
@@ -782,6 +824,7 @@ router.post('/payouts', wrap(async (req, res) => {
   for (const l of selected) {
     await db.prepare('UPDATE payments SET payout_id = ? WHERE id = ? AND company_id = ?').run(payoutId, l.id, cid);
   }
+  await logAction(req, 'Création', 'Reversement', `${owner.nom_prenoms} — net ${net}`);
   res.json(await db.prepare(`${PAYOUT_SELECT} WHERE v.id = ?`).get(payoutId));
 }));
 
@@ -789,8 +832,10 @@ router.post('/payouts', wrap(async (req, res) => {
 router.delete('/payouts/:id', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
+  const row = await db.prepare(`${PAYOUT_SELECT} WHERE v.id = ? AND v.company_id = ?`).get(id, cid);
   await db.prepare('UPDATE payments SET payout_id = NULL WHERE payout_id = ? AND company_id = ?').run(id, cid);
   await db.prepare('DELETE FROM payouts WHERE id = ? AND company_id = ?').run(id, cid);
+  if (row) await logAction(req, 'Suppression', 'Reversement', `${row.owner_nom || ''} — ${row.code}`);
   res.json({ ok: true });
 }));
 
@@ -868,7 +913,7 @@ router.post('/users', requireRole('admin'), wrap(async (req, res) => {
   const email = clean(req.body.email).toLowerCase();
   const password = clean(req.body.password);
   const nom = clean(req.body.nom);
-  const role = clean(req.body.role) === 'admin' ? 'admin' : 'secretaire';
+  const role = normRole(req.body.role);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'E-mail invalide.' });
   if (!password) return res.status(400).json({ error: 'Mot de passe requis.' });
   if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
@@ -877,6 +922,7 @@ router.post('/users', requireRole('admin'), wrap(async (req, res) => {
   const info = await db.prepare(
     'INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, ?, ?)'
   ).run(email, hashPassword(password), nom, role, cid);
+  await logAction(req, 'Création', 'Utilisateur', nom || email);
   res.json(publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
 }));
 
@@ -886,7 +932,7 @@ router.put('/users/:id', requireRole('admin'), wrap(async (req, res) => {
   const user = await db.prepare('SELECT * FROM users WHERE id = ? AND company_id = ?').get(id, cid);
   if (!user) return res.status(404).json({ error: 'Utilisateur introuvable.' });
   const nom = clean(req.body.nom) || user.nom;
-  const role = clean(req.body.role) === 'admin' ? 'admin' : 'secretaire';
+  const role = normRole(req.body.role);
   const actif = req.body.actif === undefined ? user.actif : (req.body.actif ? 1 : 0);
   const password = clean(req.body.password);
   if (password) {
@@ -895,6 +941,7 @@ router.put('/users/:id', requireRole('admin'), wrap(async (req, res) => {
   } else {
     await db.prepare('UPDATE users SET nom=?, role=?, actif=? WHERE id=? AND company_id=?').run(nom, role, actif, id, cid);
   }
+  await logAction(req, 'Modification', 'Utilisateur', nom || user.email);
   res.json(publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(id)));
 }));
 
@@ -902,8 +949,29 @@ router.delete('/users/:id', requireRole('admin'), wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
   if (id === req.userId) return res.status(400).json({ error: 'Vous ne pouvez pas supprimer votre propre compte.' });
+  const row = await db.prepare('SELECT nom, email FROM users WHERE id = ? AND company_id = ?').get(id, cid);
   await db.prepare('DELETE FROM users WHERE id = ? AND company_id = ?').run(id, cid);
+  if (row) await logAction(req, 'Suppression', 'Utilisateur', row.nom || row.email);
   res.json({ ok: true });
+}));
+
+// ===========================================================================
+// JOURNAL D'ACTIVITE (qui a fait quoi) — administrateur uniquement
+// ===========================================================================
+router.get('/audit', requireRole('admin'), wrap(async (req, res) => {
+  const q = clean(req.query.q);
+  let rows = await db.prepare(
+    `SELECT a.id, a.user_id, a.user_nom, a.action, a.entity, a.label, a.created_at,
+            u.nom AS current_nom, u.email AS current_email
+     FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+     WHERE a.company_id = ? ORDER BY a.id DESC LIMIT 1000`
+  ).all(req.companyId);
+  if (q) {
+    const s = q.toLowerCase();
+    rows = rows.filter((r) => [r.user_nom, r.current_nom, r.action, r.entity, r.label]
+      .some((v) => (v || '').toLowerCase().includes(s)));
+  }
+  res.json(rows);
 }));
 
 // ===========================================================================

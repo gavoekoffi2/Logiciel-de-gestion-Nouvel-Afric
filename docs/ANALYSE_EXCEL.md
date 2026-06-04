@@ -67,6 +67,11 @@ Reste à payer, Mois concerné, Année concernée, Statut (Soldé/Non soldé), S
   jamais représenté (pas de double reversement).
 - **Sauvegarde / restauration** : export de toutes les données de l'entreprise dans un fichier
   et réimport (fusion ou remplacement).
+- **Suivi par maison** : on « entre » dans un bien pour voir son propriétaire et, locataire par
+  locataire, l'échéancier des loyers (payé / partiel / impayé) et les retards de paiement.
+- **Comptes & rôles** étendus : administrateur, secrétaire et **assistant**.
+- **Journal d'activité** : chaque ajout / modification / suppression est tracé (qui, quoi, quand) ;
+  l'administrateur le consulte pour superviser le travail de son équipe.
 
 ## 5. Données d'exemple
 

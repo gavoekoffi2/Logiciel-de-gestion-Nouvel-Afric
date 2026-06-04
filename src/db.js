@@ -238,6 +238,19 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- Journal d'activite : trace QUI fait QUOI (ajout / modification / suppression).
+-- L'administrateur le consulte pour superviser le travail de son equipe.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+  user_id    INTEGER,                 -- auteur (peut etre supprime ensuite)
+  user_nom   TEXT,                    -- nom de l'auteur au moment de l'action
+  action     TEXT,                    -- 'Création' | 'Modification' | 'Suppression'
+  entity     TEXT,                    -- 'Propriétaire' | 'Locataire' | 'Bien' | ...
+  label      TEXT,                    -- libelle lisible (nom / code)
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 `;
 
 // Index crees APRES les migrations : certains portent sur des colonnes ajoutees
@@ -259,6 +272,7 @@ CREATE INDEX IF NOT EXISTS idx_pay_periode    ON payments(annee_concernee, mois_
 CREATE INDEX IF NOT EXISTS idx_pay_payout     ON payments(payout_id);
 CREATE INDEX IF NOT EXISTS idx_payouts_company ON payouts(company_id);
 CREATE INDEX IF NOT EXISTS idx_payouts_owner   ON payouts(owner_id);
+CREATE INDEX IF NOT EXISTS idx_audit_company   ON audit_log(company_id);
 `;
 
 // Migrations pour les bases deja existantes (ajout de colonnes). Chaque ALTER

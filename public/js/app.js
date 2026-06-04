@@ -12,6 +12,7 @@ import * as souscriptions from './views/souscriptions.js';
 import * as reglements from './views/reglements.js';
 import * as reversements from './views/reversements.js';
 import * as parametres from './views/parametres.js';
+import * as journal from './views/journal.js';
 import * as abonnement from './views/abonnement.js';
 import * as superadmin from './views/superadmin.js';
 
@@ -27,6 +28,7 @@ const ROUTES = {
   reversements:  { label: 'Reversements',    icon: 'money',         mod: reversements },
   abonnement:    { label: 'Mon abonnement',  icon: 'wallet',        mod: abonnement },
   parametres:    { label: 'Paramètres',      icon: 'settings',      mod: parametres, adminOnly: true },
+  journal:       { label: 'Journal d’activité', icon: 'clock',      mod: journal, adminOnly: true },
 };
 const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'locataires', 'souscriptions', 'reglements', 'reversements'];
 
@@ -55,6 +57,7 @@ function buildNav() {
     nav.appendChild(navSep('Administration'));
     nav.appendChild(navLink('abonnement'));
     nav.appendChild(navLink('parametres'));
+    nav.appendChild(navLink('journal'));
   }
 }
 function navSep(text) {
@@ -155,8 +158,9 @@ async function init() {
   // En-tete utilisateur
   const displayName = store.user.nom || store.user.email || '—';
   document.getElementById('userName').textContent = displayName;
+  const RLAB = { admin: 'Administrateur', assistant: 'Assistant', secretaire: 'Secrétaire' };
   document.getElementById('userRole').textContent =
-    store.isSuper ? 'Super-administrateur' : (store.user.role === 'admin' ? 'Administrateur' : 'Secrétaire');
+    store.isSuper ? 'Super-administrateur' : (RLAB[store.user.role] || 'Secrétaire');
   document.getElementById('userAvatar').textContent = displayName.trim().charAt(0).toUpperCase();
   applyBranding();
 

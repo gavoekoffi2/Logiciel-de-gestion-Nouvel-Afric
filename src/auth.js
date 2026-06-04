@@ -48,6 +48,7 @@ function requireAuth(req, res, next) {
     req.userId = req.session.userId;
     req.userRole = req.session.role;
     req.companyId = req.session.companyId || null;
+    req.userNom = req.session.userNom || null;
     return next();
   }
   return res.status(401).json({ error: 'Non authentifié' });
@@ -121,6 +122,7 @@ router.post('/register', async (req, res) => {
     req.session.userId = userId;
     req.session.role = 'admin';
     req.session.companyId = companyId;
+    req.session.userNom = nom || email || null;
 
     const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     res.json({ user: publicUser(user), company: await companyState(companyId) });
@@ -147,6 +149,7 @@ router.post('/login', async (req, res) => {
     req.session.userId = user.id;
     req.session.role = user.role;
     req.session.companyId = user.company_id || null;
+    req.session.userNom = user.nom || user.email || null;
     res.json({ user: publicUser(user) });
   } catch (err) {
     console.error(err);

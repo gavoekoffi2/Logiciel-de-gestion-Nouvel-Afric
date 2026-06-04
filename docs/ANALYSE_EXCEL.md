@@ -72,6 +72,11 @@ Reste à payer, Mois concerné, Année concernée, Statut (Soldé/Non soldé), S
 - **Comptes & rôles** étendus : administrateur, secrétaire et **assistant**.
 - **Journal d'activité** : chaque ajout / modification / suppression est tracé (qui, quoi, quand) ;
   l'administrateur le consulte pour superviser le travail de son équipe.
+- **Recouvrement mensuel** (inspiré de leur fichier Excel de recouvrement) : rapport par
+  **zone (quartier) → maison → locataire** pour un mois donné, avec montant dû, encaissé, écart
+  (impayés), **réparations** déductibles, **commission partielle** (sur l'encaissé) et **générale**
+  (sur le dû), **solde** à reverser au propriétaire et **récapitulatif** ; rapport imprimable.
+  Numéro de reçu enregistrable sur chaque paiement.
 
 ## 5. Données d'exemple
 

@@ -94,16 +94,13 @@ const wrap = (fn) => async (req, res) => {
   }
 };
 
-// Liste des mois (du 1er mois de paiement jusqu'au mois courant inclus) pour
-// construire l'echeancier d'un bail et reperer les loyers en retard.
-function monthsUntilNow(startYMD) {
+// Liste des mois du 1er mois de paiement jusqu'a la periode (annee/mois) demandee
+// incluse — sert a construire l'echeancier d'un bail et a reperer les retards.
+function monthsUntil(startYMD, ey, em) {
   const m = String(startYMD || '').match(/^(\d{4})-(\d{2})/);
   if (!m) return [];
   let y = Number(m[1]);
   let mo = Number(m[2]); // 1..12
-  const now = new Date();
-  const ey = now.getFullYear();
-  const em = now.getMonth() + 1;
   const out = [];
   let guard = 0;
   while ((y < ey || (y === ey && mo <= em)) && guard++ < 600) {
@@ -112,6 +109,10 @@ function monthsUntilNow(startYMD) {
     if (mo > 12) { mo = 1; y += 1; }
   }
   return out;
+}
+function monthsUntilNow(startYMD) {
+  const now = new Date();
+  return monthsUntil(startYMD, now.getFullYear(), now.getMonth() + 1);
 }
 
 // Roles possibles AU SEIN d'une entreprise (le super-admin est hors entreprise).
@@ -528,6 +529,141 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
 }));
 
 // ===========================================================================
+// REPARATIONS (travaux deduits du solde reverse au proprietaire)
+// ===========================================================================
+router.get('/repairs', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const propertyId = toInt(req.query.property_id);
+  const rows = propertyId
+    ? await db.prepare('SELECT * FROM repairs WHERE company_id = ? AND property_id = ? ORDER BY id DESC').all(cid, propertyId)
+    : await db.prepare('SELECT * FROM repairs WHERE company_id = ? ORDER BY id DESC').all(cid);
+  res.json(rows);
+}));
+
+router.post('/repairs', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const propertyId = toInt(req.body.property_id);
+  const prop = await db.prepare('SELECT code FROM properties WHERE id = ? AND company_id = ?').get(propertyId, cid);
+  if (!prop) return res.status(400).json({ error: 'Veuillez sélectionner un bien valide.' });
+  const montant = toInt(req.body.montant);
+  if (montant <= 0) return res.status(400).json({ error: 'Veuillez saisir le montant de la réparation.' });
+  const info = await db.prepare(
+    'INSERT INTO repairs (company_id, property_id, mois, annee, montant, description) VALUES (?,?,?,?,?,?)'
+  ).run(cid, propertyId, clean(req.body.mois) || null, toInt(req.body.annee) || null, montant, clean(req.body.description) || null);
+  await logAction(req, 'Création', 'Réparation', `${prop.code} — ${montant}`);
+  res.json(await db.prepare('SELECT * FROM repairs WHERE id = ?').get(info.lastInsertRowid));
+}));
+
+router.delete('/repairs/:id', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const id = toInt(req.params.id);
+  await db.prepare('DELETE FROM repairs WHERE id = ? AND company_id = ?').run(id, cid);
+  await logAction(req, 'Suppression', 'Réparation', '#' + id);
+  res.json({ ok: true });
+}));
+
+// ===========================================================================
+// RECOUVREMENT : rapport mensuel par ZONE (quartier) -> MAISON -> LOCATAIRE.
+// Tout est calcule automatiquement a partir des paiements enregistres.
+//   - montant du   = mois attendus (depuis le debut du bail jusqu'au mois choisi) x loyer
+//   - montant paye = somme encaissee pour ces periodes
+//   - ecart        = du - paye (impayes)
+//   - commission partielle = taux du bien x paye   (commission reellement gagnee)
+//   - commission generale  = taux du bien x du     (commission sur le total du)
+//   - solde (a reverser)   = paye - reparations - commission generale  (peut etre negatif)
+// ===========================================================================
+router.get('/recouvrement', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const now = new Date();
+  const moisSel = clean(req.query.mois) || MOIS[now.getMonth()];
+  const anneeSel = toInt(req.query.annee) || now.getFullYear();
+  const emIndex = MOIS.indexOf(moisSel) + 1;
+  if (emIndex < 1) return res.status(400).json({ error: 'Mois invalide.' });
+
+  const [subs, pays, reps] = await Promise.all([
+    db.prepare(
+      `SELECT s.id, s.montant_loyer, s.date_debut_paiement, s.montant_avance,
+              p.id AS property_id, p.code AS property_code, p.designation, p.type_construction,
+              p.ville, p.commune, p.quartier, p.part_commission,
+              o.id AS owner_id, o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
+              t.nom_prenoms AS tenant_nom
+       FROM subscriptions s
+       JOIN properties p ON p.id = s.property_id
+       LEFT JOIN owners o ON o.id = p.owner_id
+       LEFT JOIN tenants t ON t.id = s.tenant_id
+       WHERE s.company_id = ? AND s.statut = 'Active'`
+    ).all(cid),
+    db.prepare('SELECT subscription_id, mois_concerne, annee_concernee, montant_paye, numero_recu FROM payments WHERE company_id = ?').all(cid),
+    db.prepare('SELECT property_id, montant FROM repairs WHERE company_id = ? AND mois = ? AND annee = ?').all(cid, moisSel, anneeSel),
+  ]);
+
+  const within = (mo, an) => (an < anneeSel || (an === anneeSel && (MOIS.indexOf(mo) + 1) <= emIndex));
+  const payBySub = new Map();
+  for (const p of pays) {
+    if (!within(p.mois_concerne, p.annee_concernee)) continue;
+    let e = payBySub.get(p.subscription_id);
+    if (!e) { e = { byPeriod: {}, total: 0, lastRecu: null }; payBySub.set(p.subscription_id, e); }
+    e.byPeriod[`${p.annee_concernee}-${p.mois_concerne}`] = (e.byPeriod[`${p.annee_concernee}-${p.mois_concerne}`] || 0) + (p.montant_paye || 0);
+    e.total += p.montant_paye || 0;
+    if (p.numero_recu) e.lastRecu = p.numero_recu;
+  }
+  const repByProp = new Map();
+  for (const r of reps) repByProp.set(r.property_id, (repByProp.get(r.property_id) || 0) + (r.montant || 0));
+
+  const maisons = new Map();
+  for (const s of subs) {
+    const loyer = s.montant_loyer || 0;
+    const months = monthsUntil(s.date_debut_paiement, anneeSel, emIndex);
+    const pe = payBySub.get(s.id) || { byPeriod: {}, total: 0, lastRecu: null };
+    let moisPayes = 0;
+    for (const mm of months) {
+      if (loyer > 0 && (pe.byPeriod[`${mm.annee}-${mm.mois}`] || 0) >= loyer) moisPayes += 1;
+    }
+    const montantDu = months.length * loyer;
+    const montantPaye = pe.total;
+
+    let M = maisons.get(s.property_id);
+    if (!M) {
+      M = {
+        property_id: s.property_id, code: s.property_code, designation: s.designation, type: s.type_construction,
+        zone: s.quartier || s.commune || s.ville || 'Sans zone',
+        owner_id: s.owner_id, owner_nom: s.owner_nom, owner_contact: s.owner_contact,
+        part_commission: s.part_commission || 0, locataires: [], total_du: 0, total_paye: 0,
+      };
+      maisons.set(s.property_id, M);
+    }
+    M.locataires.push({
+      tenant_nom: s.tenant_nom, designation: s.designation, loyer,
+      mois_payes: moisPayes, mois_dus: Math.max(0, months.length - moisPayes),
+      montant_du: montantDu, montant_paye: montantPaye, ecart: Math.max(0, montantDu - montantPaye),
+      avance: s.montant_avance || 0, numero_recu: pe.lastRecu,
+    });
+    M.total_du += montantDu;
+    M.total_paye += montantPaye;
+  }
+
+  const FIELDS = ['total_du', 'total_paye', 'ecart', 'reparations', 'commission_partielle', 'commission_generale', 'solde'];
+  const zones = new Map();
+  const recap = Object.fromEntries(FIELDS.map((k) => [k, 0]));
+  for (const M of maisons.values()) {
+    const taux = M.part_commission || 0;
+    M.reparations = repByProp.get(M.property_id) || 0;
+    M.ecart = Math.max(0, M.total_du - M.total_paye);
+    M.commission_partielle = Math.round(M.total_paye * taux / 100);
+    M.commission_generale = Math.round(M.total_du * taux / 100);
+    M.solde = M.total_paye - M.reparations - M.commission_generale;
+    let Z = zones.get(M.zone);
+    if (!Z) { Z = { zone: M.zone, maisons: [], ...Object.fromEntries(FIELDS.map((k) => [k, 0])) }; zones.set(M.zone, Z); }
+    Z.maisons.push(M);
+    for (const k of FIELDS) { Z[k] += M[k]; recap[k] += M[k]; }
+  }
+  const zonesArr = [...zones.values()].sort((a, b) => a.zone.localeCompare(b.zone));
+  zonesArr.forEach((z) => z.maisons.sort((a, b) => (a.code || '').localeCompare(b.code || '')));
+
+  res.json({ mois: moisSel, annee: anneeSel, zones: zonesArr, recap });
+}));
+
+// ===========================================================================
 // REGLEMENTS / PAIEMENTS
 // ===========================================================================
 const PAY_SELECT = `
@@ -595,6 +731,7 @@ async function paymentPayload(body, companyId) {
     mois_concerne: clean(body.mois_concerne),
     annee_concernee: toInt(body.annee_concernee),
     statut: reste <= 0 ? 'Soldé' : 'Non soldé',
+    numero_recu: clean(body.numero_recu),
   };
 }
 
@@ -616,9 +753,9 @@ router.post('/payments', wrap(async (req, res) => {
   const info = await db.prepare(
     `INSERT INTO payments
      (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye,
-      reste_a_payer, mois_concerne, annee_concernee, statut)
+      reste_a_payer, mois_concerne, annee_concernee, statut, numero_recu)
      VALUES (@company_id,@code,@subscription_id,@property_id,@tenant_id,@date,@montant_a_payer,@montant_paye,
-      @reste_a_payer,@mois_concerne,@annee_concernee,@statut)`
+      @reste_a_payer,@mois_concerne,@annee_concernee,@statut,@numero_recu)`
   ).run({ company_id: cid, code, ...r });
   await logAction(req, 'Création', 'Règlement', `${code} (${r.mois_concerne || ''} ${r.annee_concernee || ''})`.trim());
   res.json(await db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(info.lastInsertRowid));
@@ -634,7 +771,7 @@ router.put('/payments/:id', wrap(async (req, res) => {
     `UPDATE payments SET
        subscription_id=@subscription_id, property_id=@property_id, tenant_id=@tenant_id, date=@date,
        montant_a_payer=@montant_a_payer, montant_paye=@montant_paye, reste_a_payer=@reste_a_payer,
-       mois_concerne=@mois_concerne, annee_concernee=@annee_concernee, statut=@statut
+       mois_concerne=@mois_concerne, annee_concernee=@annee_concernee, statut=@statut, numero_recu=@numero_recu
      WHERE id=@id AND company_id=@company_id`
   ).run({ id, company_id: cid, ...r });
   const updated = await db.prepare(`${PAY_SELECT} WHERE r.id = ? AND r.company_id = ?`).get(id, cid);
@@ -1057,11 +1194,11 @@ subscriptionRouter.post('/request', wrap(async (req, res) => {
 
 // Tables metier exportees, dans l'ordre des dependances (parent -> enfant).
 // payouts est place avant payments car payments.payout_id y fait reference.
-const DATA_TABLES = ['owners', 'tenants', 'properties', 'subscriptions', 'payouts', 'payments'];
+const DATA_TABLES = ['owners', 'tenants', 'properties', 'subscriptions', 'payouts', 'payments', 'repairs'];
 
 dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
   const cid = req.companyId;
-  const [company, owners, tenants, properties, subscriptions, payouts, payments] = await Promise.all([
+  const [company, owners, tenants, properties, subscriptions, payouts, payments, repairs] = await Promise.all([
     db.prepare('SELECT nom, telephone, email, adresse, devise FROM companies WHERE id = ?').get(cid),
     db.prepare('SELECT * FROM owners WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM tenants WHERE company_id = ? ORDER BY id').all(cid),
@@ -1069,6 +1206,7 @@ dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
     db.prepare('SELECT * FROM subscriptions WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM payouts WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM payments WHERE company_id = ? ORDER BY id').all(cid),
+    db.prepare('SELECT * FROM repairs WHERE company_id = ? ORDER BY id').all(cid),
   ]);
 
   const data = {
@@ -1076,7 +1214,7 @@ dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
     version: 1,
     exporte_le: new Date().toISOString(),
     entreprise: company || null,
-    donnees: { owners, tenants, properties, subscriptions, payouts, payments },
+    donnees: { owners, tenants, properties, subscriptions, payouts, payments, repairs },
   };
 
   const stamp = new Date().toISOString().slice(0, 10);
@@ -1101,8 +1239,9 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const subscriptions = list('subscriptions');
   const payouts = list('payouts');
   const payments = list('payments');
+  const repairs = list('repairs');
 
-  if (![owners, tenants, properties, subscriptions, payouts, payments].some((a) => a.length)) {
+  if (![owners, tenants, properties, subscriptions, payouts, payments, repairs].some((a) => a.length)) {
     return res.status(400).json({ error: 'Fichier de sauvegarde vide ou invalide.' });
   }
 
@@ -1122,7 +1261,7 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const propertyMap = new Map();
   const subscriptionMap = new Map();
   const payoutMap = new Map();
-  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payouts: 0, payments: 0 };
+  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payouts: 0, payments: 0, repairs: 0 };
 
   for (const o of owners) {
     const id = (await db.prepare(
@@ -1201,16 +1340,25 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
     const code = await uniqueCode('payments', 'R', p.code);
     await db.prepare(
       `INSERT INTO payments
-       (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut, payout_id)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut, payout_id, numero_recu)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       cid, code, subscriptionMap.get(p.subscription_id) || null,
       propertyMap.get(p.property_id) || null, tenantMap.get(p.tenant_id) || null,
       clean(p.date) || null, toInt(p.montant_a_payer), toInt(p.montant_paye), toInt(p.reste_a_payer),
       clean(p.mois_concerne), p.annee_concernee != null ? toInt(p.annee_concernee) : null,
-      clean(p.statut) || 'Soldé', payoutMap.get(p.payout_id) || null
+      clean(p.statut) || 'Soldé', payoutMap.get(p.payout_id) || null, clean(p.numero_recu) || null
     );
     counts.payments++;
+  }
+
+  for (const v of repairs) {
+    const pid = propertyMap.get(v.property_id);
+    if (!pid) continue; // une reparation sans bien rattachable est ignoree
+    await db.prepare(
+      'INSERT INTO repairs (company_id, property_id, mois, annee, montant, description) VALUES (?,?,?,?,?,?)'
+    ).run(cid, pid, clean(v.mois) || null, v.annee != null ? toInt(v.annee) : null, toInt(v.montant), clean(v.description) || null);
+    counts.repairs++;
   }
 
   res.json({ ok: true, mode, importe: counts });

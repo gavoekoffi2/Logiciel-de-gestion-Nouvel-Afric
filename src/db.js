@@ -235,7 +235,20 @@ CREATE TABLE IF NOT EXISTS payments (
   annee_concernee INTEGER,
   statut          TEXT NOT NULL DEFAULT 'Soldé',  -- 'Soldé' | 'Non soldé'
   payout_id       INTEGER REFERENCES payouts(id) ON DELETE SET NULL,  -- reversement couvrant ce loyer
+  numero_recu     TEXT,                            -- numero du recu physique remis au locataire
   created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- Reparations / travaux deduits du solde reverse au proprietaire (recouvrement).
+CREATE TABLE IF NOT EXISTS repairs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id  INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+  property_id INTEGER REFERENCES properties(id) ON DELETE CASCADE,
+  mois        TEXT,
+  annee       INTEGER,
+  montant     INTEGER NOT NULL DEFAULT 0,
+  description TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
 -- Journal d'activite : trace QUI fait QUOI (ajout / modification / suppression).
@@ -273,6 +286,8 @@ CREATE INDEX IF NOT EXISTS idx_pay_payout     ON payments(payout_id);
 CREATE INDEX IF NOT EXISTS idx_payouts_company ON payouts(company_id);
 CREATE INDEX IF NOT EXISTS idx_payouts_owner   ON payouts(owner_id);
 CREATE INDEX IF NOT EXISTS idx_audit_company   ON audit_log(company_id);
+CREATE INDEX IF NOT EXISTS idx_repairs_company ON repairs(company_id);
+CREATE INDEX IF NOT EXISTS idx_repairs_prop    ON repairs(property_id, annee, mois);
 `;
 
 // Migrations pour les bases deja existantes (ajout de colonnes). Chaque ALTER
@@ -294,6 +309,7 @@ const MIGRATIONS = [
   "ALTER TABLE properties ADD COLUMN designation TEXT",
   "ALTER TABLE subscriptions ADD COLUMN nombre_mois_garantie INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE subscriptions ADD COLUMN montant_garantie INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE payments ADD COLUMN numero_recu TEXT",
 ];
 
 // ---------------------------------------------------------------------------

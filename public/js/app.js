@@ -11,6 +11,7 @@ import * as locataires from './views/locataires.js';
 import * as souscriptions from './views/souscriptions.js';
 import * as reglements from './views/reglements.js';
 import * as reversements from './views/reversements.js';
+import * as recouvrement from './views/recouvrement.js';
 import * as parametres from './views/parametres.js';
 import * as journal from './views/journal.js';
 import * as abonnement from './views/abonnement.js';
@@ -25,12 +26,13 @@ const ROUTES = {
   locataires:    { label: 'Locataires',      icon: 'tenants',       mod: locataires },
   souscriptions: { label: 'Souscriptions',   icon: 'subscriptions', mod: souscriptions },
   reglements:    { label: 'Règlements',      icon: 'payments',      mod: reglements },
+  recouvrement:  { label: 'Recouvrement',    icon: 'collect',       mod: recouvrement },
   reversements:  { label: 'Reversements',    icon: 'money',         mod: reversements },
   abonnement:    { label: 'Mon abonnement',  icon: 'wallet',        mod: abonnement },
   parametres:    { label: 'Paramètres',      icon: 'settings',      mod: parametres, adminOnly: true },
   journal:       { label: 'Journal d’activité', icon: 'clock',      mod: journal, adminOnly: true },
 };
-const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'locataires', 'souscriptions', 'reglements', 'reversements'];
+const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'locataires', 'souscriptions', 'reglements', 'recouvrement', 'reversements'];
 
 // Routes du super-administrateur.
 const SUPER_ROUTES = {

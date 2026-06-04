@@ -76,6 +76,7 @@ export async function render() {
         { name: 'mois_concerne', label: 'Mois concerné', type: 'select', required: true, options: MOIS },
         { name: 'annee_concernee', label: 'Année concernée', type: 'number', required: true },
         { name: 'date', label: 'Date du paiement', type: 'date' },
+        { name: 'numero_recu', label: 'N° de reçu', placeholder: 'ex. 269' },
       ],
       values: row
         ? { ...row, _bien: row.property_code, _locataire: row.tenant_nom }
@@ -200,6 +201,7 @@ export async function printRecu(id) {
     <h2 class="doc-title">REÇU DE PAIEMENT DE LOYER</h2>
     <table class="kv">
       ${row('Identifiant du règlement', `<span style="font-family:monospace">${escapeHtml(r.code)}</span>`)}
+      ${r.numero_recu ? row('N° de reçu', `<b>${escapeHtml(r.numero_recu)}</b>`) : ''}
       ${row('Nom et prénoms du locataire', `<b>${escapeHtml(r.tenant_nom || '—')}</b>`)}
       ${row('Contact', escapeHtml(r.tenant_contact || '—'))}
       ${row('Identifiant du bien', `<span style="font-family:monospace">${escapeHtml(r.property_code || '—')}</span>`)}

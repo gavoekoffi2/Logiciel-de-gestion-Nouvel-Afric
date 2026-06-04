@@ -41,6 +41,7 @@ export async function render() {
         { name: 'montant_a_payer', label: 'Montant à payer', type: 'number', readonly: true },
         { name: 'montant_paye', label: 'Montant payé', type: 'number', required: true, min: 0 },
         { name: 'date', label: 'Date du paiement', type: 'date' },
+        { name: 'numero_recu', label: 'N° de reçu', placeholder: 'ex. 269' },
       ],
       values: {
         mois_concerne: pm.mois || MOIS[new Date().getMonth()],

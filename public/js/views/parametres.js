@@ -1,4 +1,4 @@
-import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, store, pageHeader } from '../core.js';
+import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, store, pageHeader, openModal, downloadJSON, fmt } from '../core.js';
 
 // Convertit un fichier image en data URL ; redimensionne les images matricielles
 // (max 256 px) pour garder un logo leger. Les SVG sont conserves tels quels.
@@ -65,6 +65,20 @@ export async function render() {
         </div>
         <div id="usersList"></div>
       </div>
+
+      <div class="card card-pad">
+        <h3 style="font-size:16px;margin-bottom:4px">Sauvegarde des données</h3>
+        <p class="muted" style="margin:0 0 16px;font-size:13px">
+          Exportez l’ensemble de vos données (propriétaires, locataires, biens, baux et règlements)
+          dans un fichier à conserver en lieu sûr. Vous pourrez le réimporter en cas de besoin
+          ou pour transférer vos données vers un autre espace.
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="exportData">${icon('collect', 16)} Exporter mes données</button>
+          <button class="btn btn-ghost" id="importBtn">${icon('inbox', 16)} Importer une sauvegarde</button>
+          <input type="file" id="importInput" accept="application/json,.json" style="display:none" />
+        </div>
+      </div>
     </div>`);
   pageHeader(root);
 
@@ -109,7 +123,7 @@ export async function render() {
     usersBox.innerHTML = '';
     usersBox.appendChild(dataTable({
       columns: [
-        { label: 'Identifiant', render: (u) => `<b>${escapeHtml(u.username)}</b>` },
+        { label: 'E-mail', render: (u) => `<b>${escapeHtml(u.email || '—')}</b>` },
         { label: 'Nom', render: (u) => escapeHtml(u.nom || '—') },
         { label: 'Rôle', render: (u) => badge(u.role === 'admin' ? 'Administrateur' : 'Secrétaire', u.role === 'admin' ? 'blue' : 'gray') },
         { label: 'État', render: (u) => badge(u.actif ? 'Actif' : 'Désactivé', u.actif ? 'green' : 'red') },
@@ -125,9 +139,11 @@ export async function render() {
 
   function openUser(row) {
     formModal({
-      title: row ? `Modifier « ${row.username} »` : 'Nouvel utilisateur',
+      title: row ? `Modifier « ${escapeHtml(row.nom || row.email)} »` : 'Nouvel utilisateur',
       fields: [
-        ...(row ? [] : [{ name: 'username', label: 'Identifiant de connexion', required: true, col: 2, hint: 'En minuscules, sans espace.' }]),
+        ...(row
+          ? [{ name: 'email_ro', label: 'E-mail (connexion)', readonly: true, col: 2 }]
+          : [{ name: 'email', label: 'E-mail de connexion', required: true, col: 2, hint: 'Servira à se connecter.' }]),
         { name: 'nom', label: 'Nom complet', col: 2 },
         { name: 'role', label: 'Rôle', type: 'select', options: [
           { value: 'secretaire', label: 'Secrétaire' }, { value: 'admin', label: 'Administrateur' }] },
@@ -136,7 +152,7 @@ export async function render() {
         ...(row ? [{ name: 'actif', label: 'Compte actif', type: 'select', options: [
           { value: 1, label: 'Oui' }, { value: 0, label: 'Non' }] }] : []),
       ],
-      values: row ? { ...row, role: row.role, actif: row.actif } : { role: 'secretaire' },
+      values: row ? { ...row, email_ro: row.email, role: row.role, actif: row.actif } : { role: 'secretaire' },
       onSubmit: async (v) => {
         if (row) await api.put('/api/users/' + row.id, { ...v, actif: Number(v.actif) });
         else await api.post('/api/users', v);
@@ -148,12 +164,99 @@ export async function render() {
 
   async function removeUser(row) {
     const ok = await confirmDialog({ title: 'Supprimer l’utilisateur', danger: true, okLabel: 'Supprimer',
-      message: `Supprimer le compte « ${row.username} » ?` });
+      message: `Supprimer le compte « ${row.email || row.nom} » ?` });
     if (!ok) return;
     try { await api.del('/api/users/' + row.id); toast('Utilisateur supprimé.'); loadUsers(); }
     catch (e) { toast(e.message, 'error'); }
   }
 
   root.querySelector('#addUser').onclick = () => openUser(null);
+
+  // ----- Sauvegarde / restauration des données -----
+  const exportBtn = root.querySelector('#exportData');
+  exportBtn.onclick = async () => {
+    exportBtn.disabled = true;
+    try {
+      const data = await api.get('/api/data/export');
+      const slug = (store.settings.entreprise || 'entreprise')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'entreprise';
+      downloadJSON(`sauvegarde-${slug}-${fmt.today()}.json`, data);
+      toast('Export réussi. Conservez le fichier en lieu sûr.');
+    } catch (err) { toast(err.message, 'error'); }
+    finally { exportBtn.disabled = false; }
+  };
+
+  const importInput = root.querySelector('#importInput');
+  root.querySelector('#importBtn').onclick = () => importInput.click();
+  importInput.onchange = async () => {
+    const file = importInput.files && importInput.files[0];
+    importInput.value = '';
+    if (!file) return;
+
+    let parsed;
+    try { parsed = JSON.parse(await file.text()); }
+    catch { return toast('Fichier illisible : ce n’est pas une sauvegarde valide.', 'error'); }
+
+    const d = (parsed && parsed.donnees) || parsed || {};
+    const n = (k) => (Array.isArray(d[k]) ? d[k].length : 0);
+    const counts = { owners: n('owners'), tenants: n('tenants'), properties: n('properties'), subscriptions: n('subscriptions'), payments: n('payments') };
+    if (!Object.values(counts).some(Boolean)) {
+      return toast('Ce fichier ne contient aucune donnée à importer.', 'error');
+    }
+
+    const mode = await chooseImportMode(parsed, counts);
+    if (!mode) return;
+    if (mode === 'remplacer') {
+      const ok = await confirmDialog({
+        title: 'Remplacer toutes les données', danger: true, okLabel: 'Tout remplacer',
+        message: 'ATTENTION : toutes les données actuelles de l’entreprise seront définitivement supprimées, puis remplacées par celles du fichier. Cette action est irréversible.',
+      });
+      if (!ok) return;
+    }
+
+    try {
+      const r = await api.post('/api/data/import', { ...parsed, mode });
+      const c = r.importe;
+      toast(`Importation réussie : ${c.owners} propriétaire(s), ${c.tenants} locataire(s), ${c.properties} bien(s), ${c.subscriptions} bail/baux, ${c.payments} règlement(s).`);
+    } catch (err) { toast(err.message, 'error'); }
+  };
+
   await loadUsers();
+}
+
+// Demande à l'utilisateur comment importer (fusionner ou remplacer) en affichant
+// d'abord un résumé du contenu du fichier. Résout vers 'fusionner' | 'remplacer' | null.
+function chooseImportMode(meta, counts) {
+  const ent = (meta && meta.entreprise) || {};
+  const when = meta && meta.exporte_le ? fmt.date(meta.exporte_le) : null;
+  const li = (n, label) => `<li><b>${n}</b> ${escapeHtml(label)}</li>`;
+  return new Promise((resolve) => {
+    const { overlay, close } = openModal(`
+      <div class="modal-head"><h3>Importer une sauvegarde</h3><button class="close" data-close>&times;</button></div>
+      <div class="modal-body">
+        <p class="muted" style="margin:0 0 12px;font-size:13px">
+          ${ent.nom ? 'Sauvegarde de « ' + escapeHtml(ent.nom) + ' »' : 'Fichier de sauvegarde'}${when ? ' — exportée le ' + escapeHtml(when) : ''}.
+        </p>
+        <ul style="margin:0 0 16px;padding-left:20px;font-size:14px;line-height:1.7">
+          ${li(counts.owners, 'propriétaire(s)')}
+          ${li(counts.tenants, 'locataire(s)')}
+          ${li(counts.properties, 'bien(s)')}
+          ${li(counts.subscriptions, 'bail/baux')}
+          ${li(counts.payments, 'règlement(s)')}
+        </ul>
+        <p style="margin:0;font-size:13.5px">Comment souhaitez-vous importer ces données ?</p>
+        <p class="muted" style="margin:6px 0 0;font-size:12.5px">
+          <b>Ajouter</b> : conserve vos données actuelles et y ajoute celles du fichier.
+          <b>Remplacer</b> : efface tout puis restaure le fichier.
+        </p>
+      </div>
+      <div class="modal-foot" style="flex-wrap:wrap;gap:8px">
+        <button class="btn btn-ghost" data-close>Annuler</button>
+        <button class="btn btn-danger" data-mode="remplacer">Remplacer tout</button>
+        <button class="btn btn-primary" data-mode="fusionner">Ajouter aux données</button>
+      </div>`);
+    overlay.querySelectorAll('[data-close]').forEach((b) => { b.onclick = () => { close(); resolve(null); }; });
+    overlay.querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => { close(); resolve(b.getAttribute('data-mode')); }; });
+  });
 }

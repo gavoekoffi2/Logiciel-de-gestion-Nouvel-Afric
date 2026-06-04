@@ -1,7 +1,8 @@
 // =========================================================================
-// app.js — point d'entree : chargement session, navigation, routage
+// app.js — point d'entree : session, navigation, routage
+//   3 modes : super-administrateur · entreprise active · entreprise bloquee
 // =========================================================================
-import { api, store, icon, toast } from './core.js';
+import { api, store, icon } from './core.js';
 import * as dashboard from './views/dashboard.js';
 import * as proprietaires from './views/proprietaires.js';
 import * as maisons from './views/maisons.js';
@@ -9,7 +10,10 @@ import * as locataires from './views/locataires.js';
 import * as souscriptions from './views/souscriptions.js';
 import * as reglements from './views/reglements.js';
 import * as parametres from './views/parametres.js';
+import * as abonnement from './views/abonnement.js';
+import * as superadmin from './views/superadmin.js';
 
+// Routes des utilisateurs d'entreprise.
 const ROUTES = {
   dashboard:     { label: 'Tableau de bord', icon: 'dashboard',     mod: dashboard },
   proprietaires: { label: 'Propriétaires',   icon: 'owners',        mod: proprietaires },
@@ -17,17 +21,35 @@ const ROUTES = {
   locataires:    { label: 'Locataires',      icon: 'tenants',       mod: locataires },
   souscriptions: { label: 'Souscriptions',   icon: 'subscriptions', mod: souscriptions },
   reglements:    { label: 'Règlements',      icon: 'payments',      mod: reglements },
+  abonnement:    { label: 'Mon abonnement',  icon: 'wallet',        mod: abonnement },
   parametres:    { label: 'Paramètres',      icon: 'settings',      mod: parametres, adminOnly: true },
 };
-
 const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'locataires', 'souscriptions', 'reglements'];
 
+// Routes du super-administrateur.
+const SUPER_ROUTES = {
+  entreprises: { label: 'Entreprises', icon: 'building',  mod: superadmin.companies },
+  plateforme:  { label: 'Plateforme',  icon: 'settings',  mod: superadmin.platform },
+  compte:      { label: 'Mon compte',  icon: 'users',     mod: superadmin.account },
+};
+const SUPER_NAV = ['entreprises', 'plateforme', 'compte'];
+
+const routesFor = () => (store.isSuper ? SUPER_ROUTES : ROUTES);
+const blocked = () => !store.isSuper && store.company && !store.company.actif;
+
+// ---------- Navigation ---------------------------------------------------
 function buildNav() {
   const nav = document.getElementById('nav');
   nav.innerHTML = '';
-  NAV_ORDER.forEach((key) => nav.appendChild(navLink(key)));
+  if (store.isSuper) {
+    SUPER_NAV.forEach((k) => nav.appendChild(navLink(k)));
+    return;
+  }
+  if (blocked()) { nav.appendChild(navLink('abonnement')); return; }
+  NAV_ORDER.forEach((k) => nav.appendChild(navLink(k)));
   if (store.user.role === 'admin') {
     nav.appendChild(navSep('Administration'));
+    nav.appendChild(navLink('abonnement'));
     nav.appendChild(navLink('parametres'));
   }
 }
@@ -38,7 +60,7 @@ function navSep(text) {
   return d;
 }
 function navLink(key) {
-  const r = ROUTES[key];
+  const r = routesFor()[key];
   const a = document.createElement('a');
   a.dataset.route = key;
   a.innerHTML = `${icon(r.icon)}<span>${r.label}</span>`;
@@ -47,21 +69,53 @@ function navLink(key) {
 }
 
 async function renderRoute() {
-  let key = (location.hash.replace(/^#\//, '') || 'dashboard').split('?')[0];
-  if (!ROUTES[key] || (ROUTES[key].adminOnly && store.user.role !== 'admin')) key = 'dashboard';
+  const routes = routesFor();
+  const def = store.isSuper ? 'entreprises' : 'dashboard';
+  let key = (location.hash.replace(/^#\//, '') || def).split('?')[0];
+
+  // Entreprise bloquee : on force l'ecran d'abonnement.
+  if (blocked()) key = 'abonnement';
+  if (!routes[key]) key = def;
+  if (routes[key].adminOnly && store.user.role !== 'admin') key = def;
 
   document.querySelectorAll('.nav a').forEach((a) =>
     a.classList.toggle('active', a.dataset.route === key));
-  document.getElementById('pageTitle').textContent = ROUTES[key].label;
+  document.getElementById('pageTitle').textContent = routes[key].label;
   closeSidebar();
 
   const content = document.getElementById('content');
   content.innerHTML = '<div class="spinner"></div>';
   try {
-    await ROUTES[key].mod.render();
+    await routes[key].mod.render();
   } catch (err) {
+    if (err && err.code === 'subscription') return; // gere par __subscriptionBlocked
     content.innerHTML = `<div class="alert alert-error">${err.message || 'Erreur de chargement'}</div>`;
   }
+}
+
+// ---------- Bandeau d'abonnement (essai / expiration proche) -------------
+function renderBanner() {
+  let bar = document.getElementById('subBanner');
+  if (bar) bar.remove();
+  if (store.isSuper || !store.company) return;
+  const c = store.company;
+  let html = '';
+  if (c.statut_effectif === 'essai') {
+    html = `Essai gratuit — <b>${c.jours_restants} jour(s)</b> restant(s). `
+      + `<a href="#/abonnement">Passer à l’abonnement annuel</a>.`;
+  } else if (c.statut_effectif === 'actif' && !c.illimite && typeof c.jours_restants === 'number' && c.jours_restants <= 15) {
+    html = `Votre abonnement expire dans <b>${c.jours_restants} jour(s)</b>. `
+      + `<a href="#/abonnement">Renouveler</a>.`;
+  }
+  if (!html) return;
+  bar = document.createElement('div');
+  bar.id = 'subBanner';
+  bar.style.cssText = 'background:#fef3c7;color:#92400e;padding:9px 22px;font-size:13.5px;'
+    + 'font-weight:600;border-bottom:1px solid #fde68a;text-align:center';
+  bar.innerHTML = html;
+  const main = document.querySelector('.main');
+  const topbar = document.querySelector('.topbar');
+  main.insertBefore(bar, topbar.nextSibling);
 }
 
 // ---------- Menu mobile --------------------------------------------------
@@ -76,44 +130,74 @@ function closeSidebar() {
 
 // ---------- Initialisation ----------------------------------------------
 async function init() {
+  let me;
   try {
-    const [me, settings] = await Promise.all([api.get('/api/auth/me'), api.get('/api/settings')]);
-    store.user = me.user;
-    store.settings = settings;
+    me = await api.get('/api/auth/me');
   } catch {
     window.location.href = '/login';
     return;
   }
+  store.user = me.user;
+  store.company = me.company || null;
+  store.isSuper = me.user.role === 'superadmin';
+
+  if (store.isSuper) {
+    store.settings = { entreprise: 'Administration', devise: 'FCFA' };
+  } else {
+    try { store.settings = await api.get('/api/settings'); }
+    catch { store.settings = { entreprise: (store.company && store.company.nom) || 'NOUVEL AFRIC', devise: 'FCFA' }; }
+  }
 
   // En-tete utilisateur
-  document.getElementById('userName').textContent = store.user.nom || store.user.username;
-  document.getElementById('userRole').textContent = store.user.role === 'admin' ? 'Administrateur' : 'Secrétaire';
-  document.getElementById('userAvatar').textContent =
-    (store.user.nom || store.user.username).trim().charAt(0).toUpperCase();
+  const displayName = store.user.nom || store.user.email || '—';
+  document.getElementById('userName').textContent = displayName;
+  document.getElementById('userRole').textContent =
+    store.isSuper ? 'Super-administrateur' : (store.user.role === 'admin' ? 'Administrateur' : 'Secrétaire');
+  document.getElementById('userAvatar').textContent = displayName.trim().charAt(0).toUpperCase();
   applyBranding();
 
   buildNav();
 
   document.getElementById('logoutBtn').onclick = async () => {
-    await api.post('/api/auth/logout');
+    try { await api.post('/api/auth/logout'); } catch (_) { /* ignore */ }
     window.location.href = '/login';
   };
   document.getElementById('burger').onclick = openSidebar;
   document.getElementById('backdrop').onclick = closeSidebar;
 
+  // Blocage d'abonnement detecte lors d'un appel API metier.
+  window.__subscriptionBlocked = () => {
+    if (store.company) store.company.actif = false;
+    buildNav();
+    if (location.hash !== '#/abonnement') location.hash = '#/abonnement';
+    else renderRoute();
+  };
+
   window.addEventListener('hashchange', renderRoute);
-  if (!location.hash) location.hash = '#/dashboard';
+
+  if (blocked()) location.hash = '#/abonnement';
+  else if (!location.hash) location.hash = store.isSuper ? '#/entreprises' : '#/dashboard';
+
+  renderBanner();
   await renderRoute();
 }
 
-// Applique le nom + le logo de l'entreprise dans la barre laterale.
+// Applique le nom + le logo dans la barre laterale.
 function applyBranding() {
   const b = document.querySelector('.sidebar-brand b');
-  if (b) b.textContent = store.settings.entreprise || 'NOUVEL AFRIC';
+  const sub = document.querySelector('.sidebar-brand span');
   const img = document.querySelector('.sidebar-brand .brand-mark');
+  if (store.isSuper) {
+    if (b) b.textContent = 'ADMINISTRATION';
+    if (sub) sub.textContent = 'Plateforme';
+    if (img) img.src = '/assets/logo.svg';
+    return;
+  }
+  if (b) b.textContent = store.settings.entreprise || 'NOUVEL AFRIC';
+  if (sub) sub.textContent = 'Gestion locative';
   if (img) img.src = store.settings.logo || '/assets/logo.svg';
 }
-// Utilitaire global pour rafraichir l'en-tete apres modification des parametres.
+// Rafraichit l'en-tete apres modification des parametres.
 window.refreshBrand = applyBranding;
 
 init();

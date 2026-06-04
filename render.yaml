@@ -21,3 +21,7 @@ services:
         sync: false            # à coller depuis Turso (ex. libsql://xxx.turso.io)
       - key: TURSO_AUTH_TOKEN
         sync: false            # à coller depuis Turso (jeton d'accès)
+      - key: SUPERADMIN_EMAIL
+        sync: false            # e-mail du super-administrateur (1er lancement)
+      - key: SUPERADMIN_PASSWORD
+        sync: false            # mot de passe initial du super-administrateur

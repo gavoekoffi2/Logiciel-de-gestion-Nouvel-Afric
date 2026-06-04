@@ -18,8 +18,8 @@
     <div id="error" class="alert alert-error" style="display:none"></div>
 
     <div class="field">
-      <label for="username">Identifiant</label>
-      <input id="username" name="username" type="text" autocomplete="username" placeholder="ex. admin" required autofocus />
+      <label for="email">Adresse e-mail</label>
+      <input id="email" name="email" type="email" autocomplete="email" placeholder="ex. nom@entreprise.tg" required autofocus />
     </div>
     <div class="field">
       <label for="password">Mot de passe</label>
@@ -29,22 +29,16 @@
     <button class="btn btn-primary btn-block" type="submit" id="submitBtn">Se connecter</button>
 
     <p class="hint text-center" style="margin-top:18px">
-      Comptes par défaut : <b>admin / admin123</b> &nbsp;·&nbsp; <b>secretaire / secret123</b>
+      Pas encore de compte ? <a href="/register"><b>Créer mon entreprise</b></a>
     </p>
   </form>
 
   <script>
-    // Personnalisation (nom + logo de l'entreprise) avant connexion.
     fetch('/api/branding').then((r) => (r.ok ? r.json() : null)).then((b) => {
-      if (!b) return;
-      if (b.entreprise) {
+      if (b && b.entreprise) {
         const h1 = document.querySelector('.login-logo h1');
         if (h1) h1.textContent = b.entreprise;
         document.title = 'Connexion — ' + b.entreprise;
-      }
-      if (b.logo) {
-        const img = document.querySelector('.login-logo .brand-mark');
-        if (img) img.src = b.logo;
       }
     }).catch(() => {});
 
@@ -62,7 +56,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            username: document.getElementById('username').value,
+            email: document.getElementById('email').value,
             password: document.getElementById('password').value,
           }),
         });

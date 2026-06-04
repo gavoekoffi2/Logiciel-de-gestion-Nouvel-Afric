@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Créer mon entreprise — Nouvel Afric</title>
+  <link rel="icon" href="/assets/logo.svg" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body class="login-page">
+  <form class="login-card" id="registerForm" autocomplete="on" style="max-width:460px">
+    <div class="login-logo">
+      <img src="/assets/logo.svg" alt="Nouvel Afric" class="brand-mark" />
+      <h1>Créer mon entreprise</h1>
+      <p>14 jours d’essai gratuit — sans engagement</p>
+    </div>
+
+    <div id="error" class="alert alert-error" style="display:none"></div>
+
+    <div class="field">
+      <label for="entreprise">Nom de l’entreprise <span class="req">*</span></label>
+      <input id="entreprise" name="entreprise" type="text" placeholder="ex. IMMOBILIER DU GOLFE" required autofocus />
+    </div>
+    <div class="field">
+      <label for="nom">Votre nom complet <span class="req">*</span></label>
+      <input id="nom" name="nom" type="text" placeholder="ex. Komla MENSAH" required />
+    </div>
+    <div class="field">
+      <label for="email">Adresse e-mail <span class="req">*</span></label>
+      <input id="email" name="email" type="email" autocomplete="email" placeholder="ex. nom@entreprise.tg" required />
+    </div>
+    <div class="field">
+      <label for="telephone">Téléphone</label>
+      <input id="telephone" name="telephone" type="tel" placeholder="ex. +228 90 12 34 56" />
+    </div>
+    <div class="field">
+      <label for="password">Mot de passe <span class="req">*</span></label>
+      <input id="password" name="password" type="password" autocomplete="new-password" placeholder="6 caractères minimum" required />
+    </div>
+
+    <button class="btn btn-primary btn-block" type="submit" id="submitBtn">Créer mon espace gratuit</button>
+
+    <p class="hint text-center" style="margin-top:18px">
+      Vous avez déjà un compte ? <a href="/login"><b>Se connecter</b></a>
+    </p>
+  </form>
+
+  <script>
+    fetch('/api/branding').then((r) => (r.ok ? r.json() : null)).then((b) => {
+      if (b && b.entreprise) document.title = 'Créer mon entreprise — ' + b.entreprise;
+    }).catch(() => {});
+
+    const form = document.getElementById('registerForm');
+    const errBox = document.getElementById('error');
+    const btn = document.getElementById('submitBtn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errBox.style.display = 'none';
+      btn.disabled = true;
+      btn.textContent = 'Création…';
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            entreprise: document.getElementById('entreprise').value,
+            nom: document.getElementById('nom').value,
+            email: document.getElementById('email').value,
+            telephone: document.getElementById('telephone').value,
+            password: document.getElementById('password').value,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Échec de la création');
+        window.location.href = '/';
+      } catch (err) {
+        errBox.textContent = err.message;
+        errBox.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Créer mon espace gratuit';
+      }
+    });
+  </script>
+</body>
+</html>

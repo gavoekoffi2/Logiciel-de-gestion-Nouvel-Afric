@@ -3,15 +3,18 @@
 /**
  * Base de donnees du logiciel de gestion locative "Nouvel Afric".
  *
- * Utilise libSQL (100 % compatible SQLite) via @libsql/client :
- *   - EN LOCAL  : un simple fichier  data/nouvelafric.db
- *   - EN LIGNE  : une base hebergee GRATUITEMENT sur Turso (les donnees y sont
- *                 conservees en permanence), activee des que la variable
- *                 d'environnement TURSO_DATABASE_URL est definie.
+ * PLATEFORME MULTI-ENTREPRISES (SaaS) :
+ *   - Chaque entreprise (agence) possede son propre espace et ne voit QUE ses
+ *     donnees (isolation par "company_id").
+ *   - Un "super-administrateur" (proprietaire de la plateforme) supervise toutes
+ *     les entreprises et active/prolonge leurs abonnements ANNUELS manuellement.
+ *   - Chaque entreprise demarre par un ESSAI GRATUIT, puis doit etre activee par
+ *     le super-administrateur apres paiement (activation manuelle, pas de paiement
+ *     en ligne pour le moment).
  *
- * L'acces a la base est asynchrone : un petit adaptateur "db.prepare(sql)"
- * reproduit l'interface habituelle .get() / .all() / .run() (avec await) afin
- * de garder un code clair et proche du SQLite classique.
+ * Stockage : libSQL (100 % compatible SQLite) via @libsql/client :
+ *   - EN LOCAL  : un simple fichier  data/nouvelafric.db
+ *   - EN LIGNE  : une base hebergee gratuitement sur Turso (TURSO_DATABASE_URL).
  */
 
 const path = require('path');
@@ -19,10 +22,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 
 // ---------------------------------------------------------------------------
-// Connexion. Choix automatique du client libSQL :
-//   - LIBSQL_WEB defini (serverless, ex. Netlify) : client "web" pur JS (HTTP)
-//   - TURSO_DATABASE_URL defini (ex. Render)       : client natif -> Turso
-//   - sinon                                        : fichier local
+// Connexion. Choix automatique du client libSQL.
 // ---------------------------------------------------------------------------
 let client;
 if (process.env.TURSO_DATABASE_URL) {
@@ -48,8 +48,6 @@ if (process.env.TURSO_DATABASE_URL) {
 
 // ---------------------------------------------------------------------------
 // Adaptateur asynchrone .prepare(sql).get()/.all()/.run()
-//  - 1 seul argument objet  -> parametres nommes (@cle / :cle)
-//  - sinon                  -> parametres positionnels (?)
 // ---------------------------------------------------------------------------
 function buildStmt(sql, params) {
   if (params.length === 0) return sql;
@@ -73,7 +71,6 @@ const db = {
       async run(...params) {
         const r = await client.execute(buildStmt(sql, params));
         return {
-          // libSQL renvoie un BigInt : on le convertit en nombre classique.
           lastInsertRowid: r.lastInsertRowid == null ? undefined : Number(r.lastInsertRowid),
           changes: r.rowsAffected,
         };
@@ -86,12 +83,46 @@ const db = {
 // Schema
 // ---------------------------------------------------------------------------
 const SCHEMA_SQL = `
+-- Entreprises (locataires de la plateforme). Contient le profil/branding ET
+-- l'etat de l'abonnement annuel.
+CREATE TABLE IF NOT EXISTS companies (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  nom            TEXT NOT NULL,
+  telephone      TEXT,
+  email          TEXT,
+  adresse        TEXT,
+  devise         TEXT NOT NULL DEFAULT 'FCFA',
+  logo           TEXT,
+  plan           TEXT NOT NULL DEFAULT 'annuel',
+  statut         TEXT NOT NULL DEFAULT 'essai',   -- 'essai' | 'actif' | 'suspendu'
+  essai_fin      TEXT,                            -- fin de l'essai gratuit (YYYY-MM-DD)
+  abonnement_fin TEXT,                            -- fin de l'abonnement paye (YYYY-MM-DD)
+  illimite       INTEGER NOT NULL DEFAULT 0,      -- 1 = abonnement illimite (a vie)
+  demande_le     TEXT,                            -- date de demande d'activation (ou NULL)
+  created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- Parametres de la plateforme (1 seule ligne) : ce que le super-admin affiche
+-- aux entreprises pour s'abonner (contact + tarif annuel).
+CREATE TABLE IF NOT EXISTS platform (
+  id                INTEGER PRIMARY KEY CHECK (id = 1),
+  nom               TEXT NOT NULL DEFAULT 'Nouvel Afric',
+  contact_telephone TEXT,
+  contact_whatsapp  TEXT,
+  contact_email     TEXT,
+  prix_annuel       INTEGER NOT NULL DEFAULT 50000,
+  devise            TEXT NOT NULL DEFAULT 'FCFA',
+  message           TEXT
+);
+
 CREATE TABLE IF NOT EXISTS users (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  username   TEXT UNIQUE NOT NULL,
+  username   TEXT,
+  email      TEXT,
   password   TEXT NOT NULL,
   nom        TEXT,
-  role       TEXT NOT NULL DEFAULT 'secretaire',  -- 'admin' | 'secretaire'
+  role       TEXT NOT NULL DEFAULT 'secretaire',  -- 'superadmin' | 'admin' | 'secretaire'
+  company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
   actif      INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -108,6 +139,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE TABLE IF NOT EXISTS owners (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id  INTEGER REFERENCES companies(id) ON DELETE CASCADE,
   nom_prenoms TEXT NOT NULL,
   contact     TEXT,
   email       TEXT,
@@ -117,6 +149,7 @@ CREATE TABLE IF NOT EXISTS owners (
 
 CREATE TABLE IF NOT EXISTS tenants (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id  INTEGER REFERENCES companies(id) ON DELETE CASCADE,
   nom_prenoms TEXT NOT NULL,
   contact     TEXT,
   email       TEXT,
@@ -126,6 +159,7 @@ CREATE TABLE IF NOT EXISTS tenants (
 
 CREATE TABLE IF NOT EXISTS properties (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id        INTEGER REFERENCES companies(id) ON DELETE CASCADE,
   code              TEXT UNIQUE NOT NULL,
   owner_id          INTEGER REFERENCES owners(id) ON DELETE SET NULL,
   type_construction TEXT,
@@ -142,6 +176,7 @@ CREATE TABLE IF NOT EXISTS properties (
 
 CREATE TABLE IF NOT EXISTS subscriptions (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id          INTEGER REFERENCES companies(id) ON DELETE CASCADE,
   code                TEXT UNIQUE NOT NULL,
   property_id         INTEGER REFERENCES properties(id) ON DELETE SET NULL,
   tenant_id           INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
@@ -161,6 +196,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 
 CREATE TABLE IF NOT EXISTS payments (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  company_id      INTEGER REFERENCES companies(id) ON DELETE CASCADE,
   code            TEXT UNIQUE NOT NULL,
   subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE SET NULL,
   property_id     INTEGER REFERENCES properties(id) ON DELETE SET NULL,
@@ -175,12 +211,33 @@ CREATE TABLE IF NOT EXISTS payments (
   created_at      TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_prop_owner   ON properties(owner_id);
-CREATE INDEX IF NOT EXISTS idx_sub_prop     ON subscriptions(property_id);
-CREATE INDEX IF NOT EXISTS idx_sub_tenant   ON subscriptions(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_pay_sub      ON payments(subscription_id);
-CREATE INDEX IF NOT EXISTS idx_pay_periode  ON payments(annee_concernee, mois_concerne);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_users_company  ON users(company_id);
+CREATE INDEX IF NOT EXISTS idx_owners_company ON owners(company_id);
+CREATE INDEX IF NOT EXISTS idx_tenants_company ON tenants(company_id);
+CREATE INDEX IF NOT EXISTS idx_prop_company   ON properties(company_id);
+CREATE INDEX IF NOT EXISTS idx_sub_company    ON subscriptions(company_id);
+CREATE INDEX IF NOT EXISTS idx_pay_company    ON payments(company_id);
+CREATE INDEX IF NOT EXISTS idx_prop_owner     ON properties(owner_id);
+CREATE INDEX IF NOT EXISTS idx_sub_prop       ON subscriptions(property_id);
+CREATE INDEX IF NOT EXISTS idx_sub_tenant     ON subscriptions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_pay_sub        ON payments(subscription_id);
+CREATE INDEX IF NOT EXISTS idx_pay_periode    ON payments(annee_concernee, mois_concerne);
 `;
+
+// Migrations pour les bases deja existantes (ajout de colonnes). Chaque ALTER
+// echoue silencieusement si la colonne est deja presente.
+const MIGRATIONS = [
+  "ALTER TABLE settings ADD COLUMN logo TEXT",
+  "ALTER TABLE companies ADD COLUMN illimite INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN email TEXT",
+  "ALTER TABLE users ADD COLUMN company_id INTEGER",
+  "ALTER TABLE owners ADD COLUMN company_id INTEGER",
+  "ALTER TABLE tenants ADD COLUMN company_id INTEGER",
+  "ALTER TABLE properties ADD COLUMN company_id INTEGER",
+  "ALTER TABLE subscriptions ADD COLUMN company_id INTEGER",
+  "ALTER TABLE payments ADD COLUMN company_id INTEGER",
+];
 
 // ---------------------------------------------------------------------------
 // Securite : hachage des mots de passe (scrypt, integre a Node, sans dependance)
@@ -201,95 +258,236 @@ function verifyPassword(password, stored) {
 }
 
 // ---------------------------------------------------------------------------
-// Donnees initiales (utilisateurs, parametres, et un jeu d'exemple)
+// Dates (format YYYY-MM-DD) et calcul de l'etat d'abonnement
 // ---------------------------------------------------------------------------
-async function seed() {
-  const userCount = (await db.prepare('SELECT COUNT(*) AS n FROM users').get()).n;
-  if (userCount === 0) {
-    const insUser = db.prepare('INSERT INTO users (username, password, nom, role) VALUES (?,?,?,?)');
-    await insUser.run('admin', hashPassword('admin123'), 'Administrateur', 'admin');
-    await insUser.run('secretaire', hashPassword('secret123'), 'Secrétaire', 'secretaire');
-  }
-
-  const hasSettings = (await db.prepare('SELECT COUNT(*) AS n FROM settings').get()).n;
-  if (hasSettings === 0) {
-    await db.prepare(
-      `INSERT INTO settings (id, entreprise, telephone, email, adresse, devise)
-       VALUES (1, ?, ?, ?, ?, ?)`
-    ).run(
-      'NOUVEL AFRIC',
-      '+225 00 00 00 00',
-      'contact@nouvelafric.ci',
-      'Abidjan, Côte d’Ivoire',
-      'FCFA'
-    );
-  }
-
-  // Jeu d'exemple (repris du fichier Excel) : utile uniquement pour decouvrir
-  // l'application en local. En production (en ligne), on demarre avec une base
-  // vierge. Forcer avec SEED_DEMO=1 si besoin.
-  const wantDemo = process.env.SEED_DEMO ? true : process.env.NODE_ENV !== 'production';
-  const propCount = (await db.prepare('SELECT COUNT(*) AS n FROM properties').get()).n;
-  if (propCount === 0 && wantDemo) {
-    await seedExampleData();
-  }
+function ymd(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function todayYMD() { return ymd(new Date()); }
+function addDaysYMD(days, from) {
+  const d = from ? new Date(from) : new Date();
+  d.setDate(d.getDate() + days);
+  return ymd(d);
+}
+function addYearsYMD(years, from) {
+  const d = from ? new Date(from) : new Date();
+  d.setFullYear(d.getFullYear() + years);
+  return ymd(d);
+}
+function diffDays(toDate, fromDate) {
+  const a = new Date(toDate + 'T00:00:00');
+  const b = new Date((fromDate || todayYMD()) + 'T00:00:00');
+  return Math.round((a - b) / 86400000);
 }
 
-async function seedExampleData() {
+/**
+ * Calcule l'etat effectif de l'abonnement d'une entreprise.
+ * Renvoie { statut_effectif, actif, en_essai, jours_restants, echeance, ... }.
+ *   - statut_effectif : 'actif' | 'essai' | 'expire' | 'suspendu'
+ *   - actif           : true si l'acces a l'application est autorise
+ */
+function computeSubscription(company) {
+  if (!company) return { statut_effectif: 'expire', actif: false, en_essai: false, illimite: false, jours_restants: 0, echeance: null };
+  const today = todayYMD();
+  const base = {
+    statut: company.statut,
+    illimite: !!company.illimite,
+    essai_fin: company.essai_fin || null,
+    abonnement_fin: company.abonnement_fin || null,
+    demande_le: company.demande_le || null,
+  };
+  if (company.statut === 'suspendu') {
+    return { ...base, statut_effectif: 'suspendu', actif: false, en_essai: false, jours_restants: 0, echeance: company.abonnement_fin || null };
+  }
+  // Abonnement illimite (a vie) : toujours actif, sans echeance.
+  if (company.illimite) {
+    return { ...base, statut_effectif: 'actif', actif: true, en_essai: false, jours_restants: null, echeance: null };
+  }
+  if (company.statut === 'actif') {
+    const fin = company.abonnement_fin;
+    if (fin && fin >= today) {
+      return { ...base, statut_effectif: 'actif', actif: true, en_essai: false, jours_restants: Math.max(0, diffDays(fin, today)), echeance: fin };
+    }
+    return { ...base, statut_effectif: 'expire', actif: false, en_essai: false, jours_restants: 0, echeance: fin || null };
+  }
+  // essai
+  const fin = company.essai_fin;
+  if (fin && fin >= today) {
+    return { ...base, statut_effectif: 'essai', actif: true, en_essai: true, jours_restants: Math.max(0, diffDays(fin, today)), echeance: fin };
+  }
+  return { ...base, statut_effectif: 'expire', actif: false, en_essai: true, jours_restants: 0, echeance: fin || null };
+}
+
+// ---------------------------------------------------------------------------
+// Initialisation des donnees : plateforme, super-admin, migration, demo
+// ---------------------------------------------------------------------------
+const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
+
+async function seedPlatform() {
+  const has = (await db.prepare('SELECT COUNT(*) AS n FROM platform').get()).n;
+  if (has) return;
+  await db.prepare(
+    `INSERT INTO platform (id, nom, contact_telephone, contact_whatsapp, contact_email, prix_annuel, devise, message)
+     VALUES (1, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    'Nouvel Afric',
+    '+228 90 00 00 00',
+    '+228 90 00 00 00',
+    'contact@nouvelafric.tg',
+    50000,
+    'FCFA',
+    "Pour activer votre abonnement annuel, contactez-nous (téléphone / WhatsApp / e-mail). Dès réception de votre paiement, nous activons votre compte."
+  );
+}
+
+async function seedSuperAdmin() {
+  const exists = await db.prepare("SELECT 1 FROM users WHERE role = 'superadmin'").get();
+  if (exists) return;
+  const email = (process.env.SUPERADMIN_EMAIL || 'superadmin@nouvelafric.tg').trim().toLowerCase();
+  const password = process.env.SUPERADMIN_PASSWORD || 'SuperAdmin2025';
+  await db.prepare(
+    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'superadmin', NULL)"
+  ).run(email, hashPassword(password), 'Super administrateur');
+  console.log(`Super-administrateur cree : ${email} (pensez a changer le mot de passe).`);
+}
+
+// Rattache d'eventuelles donnees mono-entreprise existantes a une 1ere entreprise.
+async function migrateLegacyData() {
+  const companyCount = (await db.prepare('SELECT COUNT(*) AS n FROM companies').get()).n;
+  if (companyCount > 0) return; // deja multi-entreprises
+
+  const legacyUsers = await db
+    .prepare("SELECT * FROM users WHERE role <> 'superadmin' AND company_id IS NULL")
+    .all();
+  const orphanData =
+    (await db.prepare('SELECT COUNT(*) AS n FROM owners WHERE company_id IS NULL').get()).n +
+    (await db.prepare('SELECT COUNT(*) AS n FROM properties WHERE company_id IS NULL').get()).n +
+    (await db.prepare('SELECT COUNT(*) AS n FROM tenants WHERE company_id IS NULL').get()).n;
+
+  if (legacyUsers.length === 0 && orphanData === 0) return; // base vierge : rien a migrer
+
+  const s = await db.prepare('SELECT * FROM settings WHERE id = 1').get();
+  const nom = (s && s.entreprise) || 'NOUVEL AFRIC';
+  // L'entreprise historique est "offerte" (active 10 ans) pour ne rien casser.
+  const companyId = (await db.prepare(
+    `INSERT INTO companies (nom, telephone, email, adresse, devise, logo, plan, statut, essai_fin, abonnement_fin)
+     VALUES (?,?,?,?,?,?, 'annuel', 'actif', ?, ?)`
+  ).run(
+    nom,
+    (s && s.telephone) || null,
+    (s && s.email) || null,
+    (s && s.adresse) || null,
+    (s && s.devise) || 'FCFA',
+    (s && s.logo) || null,
+    addDaysYMD(3650),
+    addYearsYMD(10)
+  )).lastInsertRowid;
+
+  for (const t of ['owners', 'tenants', 'properties', 'subscriptions', 'payments']) {
+    await db.prepare(`UPDATE ${t} SET company_id = ? WHERE company_id IS NULL`).run(companyId);
+  }
+  for (const u of legacyUsers) {
+    const email = (u.email || `${u.username || ('user' + u.id)}@nouvelafric.local`).toLowerCase();
+    await db.prepare('UPDATE users SET company_id = ?, email = ? WHERE id = ?').run(companyId, email, u.id);
+  }
+  console.log(`Migration : entreprise historique "${nom}" creee (id ${companyId}).`);
+}
+
+// Jeu de demonstration TOGOLAIS (local uniquement, jamais en production).
+async function seedDemoCompany() {
+  const companyId = (await db.prepare(
+    `INSERT INTO companies (nom, telephone, email, adresse, devise, plan, statut, essai_fin, abonnement_fin)
+     VALUES (?,?,?,?,?, 'annuel', 'actif', ?, ?)`
+  ).run(
+    'IMMOBILIER DU GOLFE',
+    '+228 90 12 34 56',
+    'contact@immobiliergolfe.tg',
+    'Tokoin, Lomé - Togo',
+    'FCFA',
+    addDaysYMD(3650),
+    addYearsYMD(5)
+  )).lastInsertRowid;
+
+  await db.prepare(
+    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'admin', ?)"
+  ).run('demo@immobiliergolfe.tg', hashPassword('demo1234'), 'Komla MENSAH', companyId);
+  await db.prepare(
+    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'secretaire', ?)"
+  ).run('secretaire@immobiliergolfe.tg', hashPassword('demo1234'), 'Afi ADJAVON', companyId);
+
   const ownerId = (await db
-    .prepare('INSERT INTO owners (nom_prenoms, contact) VALUES (?, ?)')
-    .run('BAHI DJEDJE LAURENT', '0758969275')).lastInsertRowid;
+    .prepare('INSERT INTO owners (company_id, nom_prenoms, contact) VALUES (?,?,?)')
+    .run(companyId, 'MENSAH Kossi', '+228 90 22 33 44')).lastInsertRowid;
 
   const t1 = (await db
-    .prepare('INSERT INTO tenants (nom_prenoms, contact) VALUES (?, ?)')
-    .run("N'GUESSAN ANGE", '0151104104')).lastInsertRowid;
+    .prepare('INSERT INTO tenants (company_id, nom_prenoms, contact) VALUES (?,?,?)')
+    .run(companyId, 'AGBEKO Yawo', '+228 91 23 45 67')).lastInsertRowid;
   const t2 = (await db
-    .prepare('INSERT INTO tenants (nom_prenoms, contact) VALUES (?, ?)')
-    .run('AFFESSY FRANCK', '0505660408')).lastInsertRowid;
+    .prepare('INSERT INTO tenants (company_id, nom_prenoms, contact) VALUES (?,?,?)')
+    .run(companyId, 'LAWSON Adjo', '+228 92 34 56 78')).lastInsertRowid;
 
   const insProp = db.prepare(
     `INSERT INTO properties
-     (code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, part_commission, nombre_porte)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`
+     (company_id, code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, part_commission, nombre_porte)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
   );
-  const p1 = (await insProp.run('MB_P3_C150000_M05022023A1812338', ownerId, 'Maison basse', 3, 150000, 'ABIDJAN', 'YOPOUGON', 'MAROC', 20, 4)).lastInsertRowid;
-  const p2 = (await insProp.run('MB_P4_C250000_M05022023A545690', ownerId, 'Maison basse', 4, 250000, 'ABIDJAN', 'COCODY', 'RIVIERA PALMERAIE', 10, 1)).lastInsertRowid;
+  const p1 = (await insProp.run(companyId, 'MB_P3_C75000_DEMOA1001', ownerId, 'Maison basse', 3, 75000, 'LOMÉ', 'Golfe', 'Tokoin', 20, 4)).lastInsertRowid;
+  const p2 = (await insProp.run(companyId, 'MB_P4_C120000_DEMOA1002', ownerId, 'Maison basse', 4, 120000, 'LOMÉ', 'Golfe', 'Agoè-Nyivé', 10, 1)).lastInsertRowid;
 
   const insSub = db.prepare(
     `INSERT INTO subscriptions
-     (code, property_id, tenant_id, date_souscription, montant_loyer,
+     (company_id, code, property_id, tenant_id, date_souscription, montant_loyer,
       nombre_mois_caution, montant_caution, nombre_mois_avance, montant_avance,
       autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   );
-  const s1 = (await insSub.run('S05022023A1013772', p1, t1, '2023-02-05', 150000, 2, 300000, 2, 300000, '', 0, '2023-02-05', '2023-02-05', 'Active')).lastInsertRowid;
-  const s2 = (await insSub.run('S05022023A3370599', p2, t2, '2023-02-05', 250000, 2, 500000, 2, 500000, 'GARAGE', 10000, '2023-02-05', '2023-02-05', 'Active')).lastInsertRowid;
+  const s1 = (await insSub.run(companyId, 'SDEMOA2001', p1, t1, '2025-01-10', 75000, 2, 150000, 2, 150000, '', 0, '2025-01-10', '2025-01-10', 'Active')).lastInsertRowid;
+  const s2 = (await insSub.run(companyId, 'SDEMOA2002', p2, t2, '2025-02-01', 120000, 2, 240000, 1, 120000, 'GARAGE', 10000, '2025-02-01', '2025-02-01', 'Active')).lastInsertRowid;
 
   const insPay = db.prepare(
     `INSERT INTO payments
-     (code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+     (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
   );
-  let n = 1000;
+  let n = 3000;
   const pay = (sub, prop, ten, montant, mois, annee) =>
-    insPay.run(`R0000${n++}`, sub, prop, ten, '2023-02-05', montant, montant, 0, mois, annee, 'Soldé');
-  await pay(s1, p1, t1, 150000, 'Mars', 2023);
-  await pay(s1, p1, t1, 150000, 'Mai', 2023);
-  await pay(s1, p1, t1, 150000, 'Juin', 2023);
-  await pay(s2, p2, t2, 250000, 'Mai', 2023);
-  await pay(s2, p2, t2, 250000, 'Juin', 2023);
+    insPay.run(companyId, `RDEMOA${n++}`, sub, prop, ten, '2025-02-05', montant, montant, 0, mois, annee, 'Soldé');
+  await pay(s1, p1, t1, 75000, 'Janvier', 2025);
+  await pay(s1, p1, t1, 75000, 'Février', 2025);
+  await pay(s2, p2, t2, 120000, 'Février', 2025);
 }
 
-// Initialisation : creation du schema puis donnees initiales.
-// `ready` est attendu par le serveur avant d'accepter les requetes.
+// ---------------------------------------------------------------------------
+// Initialisation : schema, migrations puis donnees initiales.
+// ---------------------------------------------------------------------------
 async function init() {
   try { await client.execute('PRAGMA foreign_keys = ON'); } catch (_) { /* ignore sur Turso */ }
   await client.executeMultiple(SCHEMA_SQL);
-  // Migrations : ajouts de colonnes sur les bases deja existantes.
-  try { await client.execute('ALTER TABLE settings ADD COLUMN logo TEXT'); } catch (_) { /* colonne deja presente */ }
-  await seed();
+  for (const sql of MIGRATIONS) {
+    try { await client.execute(sql); } catch (_) { /* colonne deja presente */ }
+  }
+  await seedPlatform();
+  await seedSuperAdmin();
+  await migrateLegacyData();
+
+  // Demo : uniquement hors production, et seulement si aucune entreprise.
+  const wantDemo = process.env.SEED_DEMO ? true : process.env.NODE_ENV !== 'production';
+  const companyCount = (await db.prepare('SELECT COUNT(*) AS n FROM companies').get()).n;
+  if (wantDemo && companyCount === 0) {
+    await seedDemoCompany();
+  }
 }
 
 const ready = init();
 
-module.exports = { db, ready, hashPassword, verifyPassword };
+module.exports = {
+  db,
+  ready,
+  hashPassword,
+  verifyPassword,
+  computeSubscription,
+  todayYMD,
+  addDaysYMD,
+  addYearsYMD,
+  TRIAL_DAYS,
+};

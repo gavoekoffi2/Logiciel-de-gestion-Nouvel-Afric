@@ -6,7 +6,7 @@ function stat(icClass, icName, value, label) {
 
 export async function render() {
   const d = await api.get('/api/dashboard');
-  const prenom = (store.user.nom || store.user.username).split(' ')[0];
+  const prenom = (store.user.nom || store.user.email || 'utilisateur').split(' ')[0];
 
   const pct = d.loyer_attendu > 0 ? Math.min(100, Math.round((d.loyer_encaisse_mois / d.loyer_attendu) * 100)) : 0;
 

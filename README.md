@@ -23,9 +23,24 @@ mises à jour en temps réel.
 | **Règlements (loyers)** | Enregistrement des paiements (reste à payer et statut **Soldé / Non soldé** automatiques), **impression du reçu** (avec montant en toutes lettres), et **encaissement multiple** pour collecter en une seule fois les loyers du mois. |
 | **Paramètres** | Coordonnées de l'entreprise (affichées sur les reçus et contrats) et **gestion des utilisateurs**. |
 
+### Plateforme multi-entreprises (abonnement annuel)
+L'application est une **plateforme** : chaque **entreprise** (agence) crée son propre espace
+et ne voit **que ses données** (propriétaires, locataires, biens, loyers…), totalement
+isolées des autres entreprises.
+
+- **Inscription libre** : une entreprise s'inscrit sur `/register`, démarre avec un
+  **essai gratuit de 14 jours**, puis passe à l'**abonnement annuel**.
+- **Activation manuelle** : pour s'abonner, l'entreprise contacte le propriétaire de la
+  plateforme (téléphone / WhatsApp / e-mail) ; **après paiement, le super-administrateur
+  active le compte** (pas de paiement en ligne pour l'instant).
+
 ### Rôles des utilisateurs
-- **Administrateur** : accès complet, y compris les paramètres et la création des comptes.
-- **Secrétaire** : gestion courante (biens, locataires, souscriptions, paiements, impressions).
+- **Super-administrateur** : propriétaire de la plateforme. Supervise **toutes** les
+  entreprises et **active / prolonge / suspend** leurs abonnements.
+- **Administrateur** (d'une entreprise) : accès complet à son entreprise, paramètres et
+  création des comptes de son équipe.
+- **Secrétaire** (d'une entreprise) : gestion courante (biens, locataires, souscriptions,
+  paiements, impressions).
 
 ---
 
@@ -54,14 +69,25 @@ L'application est alors disponible sur :
 > Pour connaître l'adresse IP du poste serveur : `ipconfig` (Windows) ou `ip a` (Linux).
 
 ### 4. Première connexion
-Comptes créés automatiquement au premier lancement :
 
-| Identifiant | Mot de passe | Rôle |
-|-------------|--------------|------|
-| `admin` | `admin123` | Administrateur |
-| `secretaire` | `secret123` | Secrétaire |
+**a) Côté super-administrateur** (propriétaire de la plateforme) — compte créé
+automatiquement au premier lancement :
 
-> ⚠️ **Pensez à changer ces mots de passe** dès la première utilisation (menu **Paramètres → Utilisateurs**).
+| E-mail | Mot de passe |
+|--------|--------------|
+| `superadmin@nouvelafric.tg` | `SuperAdmin2025` |
+
+> ⚠️ **Changez ce mot de passe** dès la première connexion (menu **Mon compte**).
+> En production, définissez plutôt `SUPERADMIN_EMAIL` et `SUPERADMIN_PASSWORD`
+> (voir la section Configuration) pour utiliser vos propres identifiants.
+
+Depuis l'espace **Plateforme**, renseignez vos **coordonnées** (téléphone, WhatsApp,
+e-mail) et le **tarif annuel** : ils s'afficheront aux entreprises pour qu'elles
+vous contactent et paient.
+
+**b) Côté entreprise** : chaque agence crée son espace via le bouton
+**« Créer mon entreprise »** (page `/register`). Elle obtient **14 jours d'essai
+gratuit**, puis vous l'activez manuellement après paiement.
 
 ---
 
@@ -107,6 +133,9 @@ Variables d'environnement possibles au démarrage :
 | `DB_PATH` | Emplacement du fichier de base (mode local) | `data/nouvelafric.db` |
 | `TURSO_DATABASE_URL` | Active la base en ligne Turso (sinon fichier local) | *(non défini)* |
 | `TURSO_AUTH_TOKEN` | Jeton d'accès à la base Turso | *(non défini)* |
+| `SUPERADMIN_EMAIL` | E-mail du super-administrateur (créé au 1er lancement) | `superadmin@nouvelafric.tg` |
+| `SUPERADMIN_PASSWORD` | Mot de passe initial du super-administrateur | `SuperAdmin2025` |
+| `TRIAL_DAYS` | Durée de l'essai gratuit (en jours) | `14` |
 
 Exemple (Windows) : `set PORT=8080 && npm start`
 Exemple (Linux/Mac) : `PORT=8080 npm start`
@@ -131,14 +160,16 @@ serveur local, ou un hébergement web).
 .
 ├── server.js              # Démarrage du serveur web
 ├── src/
-│   ├── db.js              # Base de données (schéma + données d'exemple)
-│   ├── auth.js            # Connexion / rôles
-│   └── api.js             # Toute la logique métier (API REST)
+│   ├── db.js              # Base de données (multi-entreprises + abonnements)
+│   ├── auth.js            # Inscription / connexion e-mail / rôles / abonnement
+│   ├── api.js             # Logique métier (API REST, isolée par entreprise)
+│   └── platform.js        # Espace super-administrateur (gestion des entreprises)
 ├── public/                # Interface (ce que voit l'utilisateur)
-│   ├── login.html         # Page de connexion
+│   ├── login.html         # Connexion par e-mail
+│   ├── register.html      # Inscription d'une entreprise
 │   ├── index.html         # Application
 │   ├── css/style.css
-│   └── js/                # Écrans : tableau de bord, biens, paiements…
+│   └── js/                # Écrans : tableau de bord, biens, abonnement, super-admin…
 ├── docs/
 │   └── ANALYSE_EXCEL.md   # Correspondance avec le fichier Excel d'origine
 └── data/                  # Base de données (créée automatiquement)

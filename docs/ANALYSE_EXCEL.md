@@ -64,7 +64,8 @@ Reste à payer, Mois concerné, Année concernée, Statut (Soldé/Non soldé), S
 
 ## 5. Données d'exemple
 
-Au premier lancement, l'application est pré-remplie avec le jeu d'exemple du fichier Excel
-(propriétaire *BAHI DJEDJE LAURENT*, deux biens à Yopougon et Cocody, locataires *N'GUESSAN ANGE*
-et *AFFESSY FRANCK*, leurs souscriptions et quelques règlements) afin de montrer le fonctionnement.
-Ces données peuvent être modifiées ou supprimées librement.
+En mode local (hors production), une **entreprise de démonstration togolaise** est créée
+(*IMMOBILIER DU GOLFE* à Lomé : propriétaire *MENSAH Kossi*, deux biens à Tokoin et
+Agoè-Nyivé, locataires *AGBEKO Yawo* et *LAWSON Adjo*, leurs souscriptions et quelques
+règlements) afin de montrer le fonctionnement. En production, chaque entreprise démarre
+avec un espace vierge. Ces données peuvent être modifiées ou supprimées librement.

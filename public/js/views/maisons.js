@@ -74,7 +74,7 @@ export async function render() {
         { name: 'quartier', label: 'Quartier' },
         { name: 'observation', label: 'Observation', type: 'textarea' },
       ],
-      values: row || { part_commission: 0, ville: 'ABIDJAN' },
+      values: row || { part_commission: 0, ville: 'LOMÉ' },
       onSubmit: async (v) => {
         if (row) await api.put('/api/properties/' + row.id, v);
         else await api.post('/api/properties', v);

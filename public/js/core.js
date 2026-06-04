@@ -16,6 +16,13 @@ async function request(method, url, body) {
   let data = null;
   const txt = await res.text();
   if (txt) { try { data = JSON.parse(txt); } catch { data = txt; } }
+  // 402 : abonnement inactif (essai terminé / abonnement expiré / suspendu).
+  if (res.status === 402) {
+    if (typeof window !== 'undefined' && window.__subscriptionBlocked) window.__subscriptionBlocked(data || {});
+    const err = new Error((data && data.error) || 'Abonnement inactif');
+    err.code = 'subscription';
+    throw err;
+  }
   if (!res.ok) throw new Error((data && data.error) || 'Une erreur est survenue');
   return data;
 }
@@ -49,6 +56,19 @@ export const fmt = {
 
 export const MOIS = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
   'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
+
+// Telecharge un objet JSON sous forme de fichier (export des donnees).
+export function downloadJSON(filename, obj) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 // ---------- Montant en toutes lettres (francais) -------------------------
 const UNITS = ['zéro', 'un', 'deux', 'trois', 'quatre', 'cinq', 'six', 'sept', 'huit', 'neuf',

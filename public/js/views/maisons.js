@@ -45,6 +45,7 @@ export async function render() {
       ],
       rows,
       actions: [
+        { title: 'Entrer / suivi des locataires', icon: 'eye', variant: 'btn-ghost', onClick: (r) => { location.hash = '#/bien?id=' + r.id; } },
         { title: 'Modifier', icon: 'edit', onClick: (r) => openForm(r) },
         { title: 'Supprimer', icon: 'trash', onClick: (r) => remove(r) },
       ],

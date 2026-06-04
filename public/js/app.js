@@ -6,6 +6,7 @@ import { api, store, icon } from './core.js';
 import * as dashboard from './views/dashboard.js';
 import * as proprietaires from './views/proprietaires.js';
 import * as maisons from './views/maisons.js';
+import * as maisonDetail from './views/maisonDetail.js';
 import * as locataires from './views/locataires.js';
 import * as souscriptions from './views/souscriptions.js';
 import * as reglements from './views/reglements.js';
@@ -19,6 +20,7 @@ const ROUTES = {
   dashboard:     { label: 'Tableau de bord', icon: 'dashboard',     mod: dashboard },
   proprietaires: { label: 'Propriétaires',   icon: 'owners',        mod: proprietaires },
   maisons:       { label: 'Maisons / Biens', icon: 'houses',        mod: maisons },
+  bien:          { label: 'Détail du bien',  icon: 'houses',        mod: maisonDetail },
   locataires:    { label: 'Locataires',      icon: 'tenants',       mod: locataires },
   souscriptions: { label: 'Souscriptions',   icon: 'subscriptions', mod: souscriptions },
   reglements:    { label: 'Règlements',      icon: 'payments',      mod: reglements },

@@ -94,6 +94,26 @@ const wrap = (fn) => async (req, res) => {
   }
 };
 
+// Liste des mois (du 1er mois de paiement jusqu'au mois courant inclus) pour
+// construire l'echeancier d'un bail et reperer les loyers en retard.
+function monthsUntilNow(startYMD) {
+  const m = String(startYMD || '').match(/^(\d{4})-(\d{2})/);
+  if (!m) return [];
+  let y = Number(m[1]);
+  let mo = Number(m[2]); // 1..12
+  const now = new Date();
+  const ey = now.getFullYear();
+  const em = now.getMonth() + 1;
+  const out = [];
+  let guard = 0;
+  while ((y < ey || (y === ey && mo <= em)) && guard++ < 600) {
+    out.push({ annee: y, mois: MOIS[mo - 1] });
+    mo += 1;
+    if (mo > 12) { mo = 1; y += 1; }
+  }
+  return out;
+}
+
 // ===========================================================================
 // PROPRIETAIRES
 // ===========================================================================
@@ -422,6 +442,54 @@ router.put('/subscriptions/:id', wrap(async (req, res) => {
 router.delete('/subscriptions/:id', wrap(async (req, res) => {
   await db.prepare('DELETE FROM subscriptions WHERE id = ? AND company_id = ?').run(toInt(req.params.id), req.companyId);
   res.json({ ok: true });
+}));
+
+// ===========================================================================
+// DETAIL D'UNE MAISON : « entrer » dans un bien pour suivre, locataire par
+// locataire, les loyers payes, les impayes et les retards de paiement.
+// ===========================================================================
+router.get('/properties/:id/details', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const id = toInt(req.params.id);
+  const property = await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ? AND p.company_id = ?`).get(id, cid);
+  if (!property) return res.status(404).json({ error: 'Bien introuvable.' });
+
+  const subs = await db.prepare(`${SUB_SELECT} WHERE s.property_id = ? AND s.company_id = ? ORDER BY s.statut, s.id DESC`).all(id, cid);
+
+  for (const s of subs) {
+    const pays = await db.prepare(
+      `SELECT id, code, date, mois_concerne, annee_concernee, montant_a_payer, montant_paye, reste_a_payer, statut
+       FROM payments WHERE subscription_id = ? AND company_id = ? ORDER BY annee_concernee, id`
+    ).all(s.id, cid);
+
+    const paidBy = {};
+    let total_paye = 0;
+    for (const p of pays) {
+      const k = `${p.annee_concernee}-${p.mois_concerne}`;
+      paidBy[k] = (paidBy[k] || 0) + (p.montant_paye || 0);
+      total_paye += p.montant_paye || 0;
+    }
+
+    const loyer = s.montant_loyer || 0;
+    // L'echeancier n'est calcule que pour les baux actifs (loyers attendus).
+    let echeancier = [];
+    if (s.statut === 'Active' && s.date_debut_paiement) {
+      echeancier = monthsUntilNow(s.date_debut_paiement).map((mm) => {
+        const paye = paidBy[`${mm.annee}-${mm.mois}`] || 0;
+        const statut = (loyer > 0 && paye >= loyer) ? 'Payé' : (paye > 0 ? 'Partiel' : 'Impayé');
+        return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste: Math.max(0, loyer - paye), statut };
+      });
+    }
+    const total_attendu = echeancier.reduce((a, m) => a + m.attendu, 0);
+    const reste = echeancier.reduce((a, m) => a + m.reste, 0);
+    const mois_retard = echeancier.filter((m) => m.reste > 0).length;
+
+    s.paiements = pays;
+    s.echeancier = echeancier;
+    s.resume = { nb_paiements: pays.length, total_attendu, total_paye, reste, mois_retard };
+  }
+
+  res.json({ property, subscriptions: subs });
 }));
 
 // ===========================================================================

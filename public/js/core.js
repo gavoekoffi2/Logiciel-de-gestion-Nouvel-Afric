@@ -350,6 +350,7 @@ export function printDocument(title, bodyHtml) {
 
 export function docHeader() {
   const s = store.settings || {};
+  const logo = s.logo || '/assets/logo.svg';
   return `<div class="doc-head">
     <div>
       <div class="ent">${escapeHtml(s.entreprise || 'NOUVEL AFRIC')}</div>
@@ -359,6 +360,6 @@ export function docHeader() {
         ${s.adresse ? escapeHtml(s.adresse) : ''}
       </div>
     </div>
-    <img src="/assets/logo.svg" class="doc-logo" alt="">
+    <img src="${logo}" class="doc-logo" alt="">
   </div>`;
 }

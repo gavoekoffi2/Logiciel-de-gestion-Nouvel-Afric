@@ -15,7 +15,7 @@ const crypto = require('crypto');
 const express = require('express');
 const cookieSession = require('cookie-session');
 
-const { ready } = require('./db');
+const { ready, db } = require('./db');
 const { router: authRouter, requireAuth } = require('./auth');
 const apiRouter = require('./api');
 
@@ -26,7 +26,7 @@ const app = express();
 
 app.disable('x-powered-by');
 if (isProd) app.set('trust proxy', 1); // derriere le proxy HTTPS de l'hebergeur
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' })); // 2 Mo : marge pour le logo de l'entreprise
 app.use(express.urlencoded({ extended: true }));
 
 // Session stockee dans un cookie signe : aucune donnee a conserver cote serveur,
@@ -43,6 +43,16 @@ app.use(cookieSession({
 
 // Routes d'authentification (publiques).
 app.use('/api/auth', authRouter);
+
+// Identite visuelle (nom + logo) pour la page de connexion, accessible sans session.
+app.get('/api/branding', async (req, res) => {
+  try {
+    const s = await db.prepare('SELECT entreprise, logo FROM settings WHERE id = 1').get();
+    res.json({ entreprise: (s && s.entreprise) || 'NOUVEL AFRIC', logo: (s && s.logo) || null });
+  } catch (_) {
+    res.json({ entreprise: 'NOUVEL AFRIC', logo: null });
+  }
+});
 
 // Toute l'API metier exige une session connectee.
 app.use('/api', requireAuth, apiRouter);

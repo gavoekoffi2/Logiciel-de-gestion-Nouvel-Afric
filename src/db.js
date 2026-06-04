@@ -102,7 +102,8 @@ CREATE TABLE IF NOT EXISTS settings (
   telephone  TEXT,
   email      TEXT,
   adresse    TEXT,
-  devise     TEXT NOT NULL DEFAULT 'FCFA'
+  devise     TEXT NOT NULL DEFAULT 'FCFA',
+  logo       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS owners (
@@ -284,6 +285,8 @@ async function seedExampleData() {
 async function init() {
   try { await client.execute('PRAGMA foreign_keys = ON'); } catch (_) { /* ignore sur Turso */ }
   await client.executeMultiple(SCHEMA_SQL);
+  // Migrations : ajouts de colonnes sur les bases deja existantes.
+  try { await client.execute('ALTER TABLE settings ADD COLUMN logo TEXT'); } catch (_) { /* colonne deja presente */ }
   await seed();
 }
 

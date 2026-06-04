@@ -90,7 +90,7 @@ async function init() {
   document.getElementById('userRole').textContent = store.user.role === 'admin' ? 'Administrateur' : 'Secrétaire';
   document.getElementById('userAvatar').textContent =
     (store.user.nom || store.user.username).trim().charAt(0).toUpperCase();
-  document.querySelector('.sidebar-brand b').textContent = store.settings.entreprise || 'NOUVEL AFRIC';
+  applyBranding();
 
   buildNav();
 
@@ -106,9 +106,14 @@ async function init() {
   await renderRoute();
 }
 
-// Petit utilitaire global pour rafraichir l'en-tete apres modif des parametres.
-window.refreshBrand = () => {
-  document.querySelector('.sidebar-brand b').textContent = store.settings.entreprise || 'NOUVEL AFRIC';
-};
+// Applique le nom + le logo de l'entreprise dans la barre laterale.
+function applyBranding() {
+  const b = document.querySelector('.sidebar-brand b');
+  if (b) b.textContent = store.settings.entreprise || 'NOUVEL AFRIC';
+  const img = document.querySelector('.sidebar-brand .brand-mark');
+  if (img) img.src = store.settings.logo || '/assets/logo.svg';
+}
+// Utilitaire global pour rafraichir l'en-tete apres modification des parametres.
+window.refreshBrand = applyBranding;
 
 init();

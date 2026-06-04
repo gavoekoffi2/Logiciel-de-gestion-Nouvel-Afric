@@ -596,14 +596,34 @@ router.get('/settings', wrap(async (req, res) => {
 
 router.put('/settings', requireRole('admin'), wrap(async (req, res) => {
   const b = req.body || {};
+
+  // Logo : data URL d'image (téléversée par l'utilisateur), null pour réinitialiser,
+  // ou non fourni -> on conserve le logo existant.
+  let logo;
+  if (b.logo === undefined) {
+    const cur = await db.prepare('SELECT logo FROM settings WHERE id = 1').get();
+    logo = (cur && cur.logo) || null;
+  } else if (b.logo === null || b.logo === '') {
+    logo = null;
+  } else {
+    logo = String(b.logo);
+    if (!/^data:image\/(png|jpeg|jpg|webp|svg\+xml);/i.test(logo)) {
+      return res.status(400).json({ error: 'Logo invalide : veuillez choisir une image (PNG, JPG ou SVG).' });
+    }
+    if (logo.length > 700000) {
+      return res.status(400).json({ error: 'Logo trop volumineux (max ~500 Ko). Choisissez une image plus légère.' });
+    }
+  }
+
   await db.prepare(
-    'UPDATE settings SET entreprise=?, telephone=?, email=?, adresse=?, devise=? WHERE id=1'
+    'UPDATE settings SET entreprise=?, telephone=?, email=?, adresse=?, devise=?, logo=? WHERE id=1'
   ).run(
     clean(b.entreprise) || 'NOUVEL AFRIC',
     clean(b.telephone),
     clean(b.email),
     clean(b.adresse),
-    clean(b.devise) || 'FCFA'
+    clean(b.devise) || 'FCFA',
+    logo
   );
   res.json(await db.prepare('SELECT * FROM settings WHERE id = 1').get());
 }));

@@ -34,6 +34,20 @@
   </form>
 
   <script>
+    // Personnalisation (nom + logo de l'entreprise) avant connexion.
+    fetch('/api/branding').then((r) => (r.ok ? r.json() : null)).then((b) => {
+      if (!b) return;
+      if (b.entreprise) {
+        const h1 = document.querySelector('.login-logo h1');
+        if (h1) h1.textContent = b.entreprise;
+        document.title = 'Connexion — ' + b.entreprise;
+      }
+      if (b.logo) {
+        const img = document.querySelector('.login-logo .brand-mark');
+        if (img) img.src = b.logo;
+      }
+    }).catch(() => {});
+
     const form = document.getElementById('loginForm');
     const errBox = document.getElementById('error');
     const btn = document.getElementById('submitBtn');

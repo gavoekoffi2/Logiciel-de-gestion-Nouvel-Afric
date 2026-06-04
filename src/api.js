@@ -53,12 +53,9 @@ function dateCode(dateStr) {
   return `${dd}${mm}${d.getFullYear()}`;
 }
 
+// Abrege le type de bien pour l'inserer dans le code (ex. 'RDC' -> 'RDC', 'R+1' -> 'R1').
 function typeCode(type) {
-  const t = (type || '').toLowerCase();
-  if (t.includes('immeuble')) return 'MI';
-  if (t.includes('basse')) return 'MB';
-  if (t.includes('compos')) return 'MC';
-  return 'MX';
+  return (clean(type) || 'BIEN').replace(/[^A-Za-z0-9]+/g, '').toUpperCase() || 'BIEN';
 }
 
 // Les codes restent uniques au niveau global (le suffixe aleatoire l'assure).
@@ -66,8 +63,8 @@ async function codeExists(table, code) {
   return !!(await db.prepare(`SELECT 1 FROM ${table} WHERE code = ?`).get(code));
 }
 
-async function genPropertyCode(type, pieces, cout, dateStr) {
-  const base = `${typeCode(type)}_P${toInt(pieces)}_C${toInt(cout)}_M${dateCode(dateStr)}`;
+async function genPropertyCode(type, cout, dateStr) {
+  const base = `${typeCode(type)}_C${toInt(cout)}_M${dateCode(dateStr)}`;
   let code;
   do { code = `${base}A${rand()}`; } while (await codeExists('properties', code));
   return code;
@@ -142,8 +139,8 @@ router.post('/owners', wrap(async (req, res) => {
   const err = await validatePerson(p, 'owners', cid, 0, 'propriétaire');
   if (err) return res.status(400).json({ error: err });
   const info = await db.prepare(
-    'INSERT INTO owners (company_id, nom_prenoms, contact, email, adresse) VALUES (?,?,?,?,?)'
-  ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse);
+    'INSERT INTO owners (company_id, nom_prenoms, contact, email, adresse, type_logement, pieces_logement) VALUES (?,?,?,?,?,?,?)'
+  ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, clean(req.body.type_logement), clean(req.body.pieces_logement));
   res.json(await db.prepare('SELECT * FROM owners WHERE id = ?').get(info.lastInsertRowid));
 }));
 
@@ -154,8 +151,8 @@ router.put('/owners/:id', wrap(async (req, res) => {
   const err = await validatePerson(p, 'owners', cid, id, 'propriétaire');
   if (err) return res.status(400).json({ error: err });
   await db.prepare(
-    'UPDATE owners SET nom_prenoms=?, contact=?, email=?, adresse=? WHERE id=? AND company_id=?'
-  ).run(p.nom_prenoms, p.contact, p.email, p.adresse, id, cid);
+    'UPDATE owners SET nom_prenoms=?, contact=?, email=?, adresse=?, type_logement=?, pieces_logement=? WHERE id=? AND company_id=?'
+  ).run(p.nom_prenoms, p.contact, p.email, p.adresse, clean(req.body.type_logement), clean(req.body.pieces_logement), id, cid);
   res.json(await db.prepare('SELECT * FROM owners WHERE id = ? AND company_id = ?').get(id, cid));
 }));
 
@@ -190,8 +187,8 @@ router.post('/tenants', wrap(async (req, res) => {
   const err = await validatePerson(p, 'tenants', cid, 0, 'locataire');
   if (err) return res.status(400).json({ error: err });
   const info = await db.prepare(
-    'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse) VALUES (?,?,?,?,?)'
-  ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse);
+    'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution) VALUES (?,?,?,?,?,?)'
+  ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution));
   res.json(await db.prepare('SELECT * FROM tenants WHERE id = ?').get(info.lastInsertRowid));
 }));
 
@@ -202,8 +199,8 @@ router.put('/tenants/:id', wrap(async (req, res) => {
   const err = await validatePerson(p, 'tenants', cid, id, 'locataire');
   if (err) return res.status(400).json({ error: err });
   await db.prepare(
-    'UPDATE tenants SET nom_prenoms=?, contact=?, email=?, adresse=? WHERE id=? AND company_id=?'
-  ).run(p.nom_prenoms, p.contact, p.email, p.adresse, id, cid);
+    'UPDATE tenants SET nom_prenoms=?, contact=?, email=?, adresse=?, caution=? WHERE id=? AND company_id=?'
+  ).run(p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), id, cid);
   res.json(await db.prepare('SELECT * FROM tenants WHERE id = ? AND company_id = ?').get(id, cid));
 }));
 
@@ -252,6 +249,7 @@ function propertyPayload(body) {
     owner_id: toInt(body.owner_id) || null,
     type_construction: clean(body.type_construction),
     nombre_piece: toInt(body.nombre_piece),
+    designation: clean(body.designation),
     cout_loyer: toInt(body.cout_loyer),
     ville: clean(body.ville),
     commune: clean(body.commune),
@@ -267,8 +265,8 @@ async function validateProperty(p, companyId) {
   // Le proprietaire doit appartenir a la meme entreprise.
   const own = await db.prepare('SELECT 1 FROM owners WHERE id = ? AND company_id = ?').get(p.owner_id, companyId);
   if (!own) return 'Propriétaire introuvable.';
-  if (!p.type_construction) return 'Veuillez sélectionner le type de construction.';
-  if (!p.nombre_piece) return 'Veuillez saisir le nombre de pièces.';
+  if (!p.type_construction) return 'Veuillez sélectionner le type de bien.';
+  if (!p.designation) return 'Veuillez saisir la désignation du bien.';
   if (!p.cout_loyer) return 'Veuillez saisir le coût du loyer.';
   if (p.part_commission > 100) return 'La part de commission doit être inférieure ou égale à 100.';
   return null;
@@ -279,11 +277,11 @@ router.post('/properties', wrap(async (req, res) => {
   const p = propertyPayload(req.body);
   const err = await validateProperty(p, cid);
   if (err) return res.status(400).json({ error: err });
-  const code = await genPropertyCode(p.type_construction, p.nombre_piece, p.cout_loyer, req.body.date);
+  const code = await genPropertyCode(p.type_construction, p.cout_loyer, req.body.date);
   const info = await db.prepare(
     `INSERT INTO properties
-     (company_id, code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
-     VALUES (@company_id,@code,@owner_id,@type_construction,@nombre_piece,@cout_loyer,@ville,@commune,@quartier,@observation,@part_commission,@nombre_porte)`
+     (company_id, code, owner_id, type_construction, nombre_piece, designation, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
+     VALUES (@company_id,@code,@owner_id,@type_construction,@nombre_piece,@designation,@cout_loyer,@ville,@commune,@quartier,@observation,@part_commission,@nombre_porte)`
   ).run({ company_id: cid, code, ...p });
   res.json(await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ?`).get(info.lastInsertRowid));
 }));
@@ -297,7 +295,7 @@ router.put('/properties/:id', wrap(async (req, res) => {
   await db.prepare(
     `UPDATE properties SET
        owner_id=@owner_id, type_construction=@type_construction, nombre_piece=@nombre_piece,
-       cout_loyer=@cout_loyer, ville=@ville, commune=@commune, quartier=@quartier,
+       designation=@designation, cout_loyer=@cout_loyer, ville=@ville, commune=@commune, quartier=@quartier,
        observation=@observation, part_commission=@part_commission, nombre_porte=@nombre_porte
      WHERE id=@id AND company_id=@company_id`
   ).run({ id, company_id: cid, ...p });
@@ -317,7 +315,7 @@ router.delete('/properties/:id', wrap(async (req, res) => {
 // SOUSCRIPTIONS / BAUX
 // ===========================================================================
 const SUB_SELECT = `
-  SELECT s.*, p.code AS property_code, p.type_construction, p.nombre_piece,
+  SELECT s.*, p.code AS property_code, p.type_construction, p.nombre_piece, p.designation,
          o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
          t.nom_prenoms AS tenant_nom, t.contact AS tenant_contact
   FROM subscriptions s
@@ -351,6 +349,7 @@ function subscriptionPayload(body) {
   const montant_loyer = toInt(body.montant_loyer);
   const nbCaution = toInt(body.nombre_mois_caution);
   const nbAvance = toInt(body.nombre_mois_avance);
+  const nbGarantie = toInt(body.nombre_mois_garantie);
   return {
     property_id: toInt(body.property_id) || null,
     tenant_id: toInt(body.tenant_id) || null,
@@ -360,6 +359,8 @@ function subscriptionPayload(body) {
     montant_caution: body.montant_caution !== undefined ? toInt(body.montant_caution) : nbCaution * montant_loyer,
     nombre_mois_avance: nbAvance,
     montant_avance: body.montant_avance !== undefined ? toInt(body.montant_avance) : nbAvance * montant_loyer,
+    nombre_mois_garantie: nbGarantie,
+    montant_garantie: body.montant_garantie !== undefined ? toInt(body.montant_garantie) : nbGarantie * montant_loyer,
     autre_frais: clean(body.autre_frais),
     montant_autre_frais: toInt(body.montant_autre_frais),
     date_entree: clean(body.date_entree),
@@ -390,11 +391,11 @@ router.post('/subscriptions', wrap(async (req, res) => {
   const info = await db.prepare(
     `INSERT INTO subscriptions
      (company_id, code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution,
-      montant_caution, nombre_mois_avance, montant_avance, autre_frais, montant_autre_frais,
-      date_entree, date_debut_paiement, statut)
+      montant_caution, nombre_mois_avance, montant_avance, nombre_mois_garantie, montant_garantie,
+      autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
      VALUES (@company_id,@code,@property_id,@tenant_id,@date_souscription,@montant_loyer,@nombre_mois_caution,
-      @montant_caution,@nombre_mois_avance,@montant_avance,@autre_frais,@montant_autre_frais,
-      @date_entree,@date_debut_paiement,@statut)`
+      @montant_caution,@nombre_mois_avance,@montant_avance,@nombre_mois_garantie,@montant_garantie,
+      @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@statut)`
   ).run({ company_id: cid, code, ...s });
   res.json(await db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(info.lastInsertRowid));
 }));
@@ -409,7 +410,8 @@ router.put('/subscriptions/:id', wrap(async (req, res) => {
     `UPDATE subscriptions SET
        property_id=@property_id, tenant_id=@tenant_id, date_souscription=@date_souscription,
        montant_loyer=@montant_loyer, nombre_mois_caution=@nombre_mois_caution, montant_caution=@montant_caution,
-       nombre_mois_avance=@nombre_mois_avance, montant_avance=@montant_avance, autre_frais=@autre_frais,
+       nombre_mois_avance=@nombre_mois_avance, montant_avance=@montant_avance,
+       nombre_mois_garantie=@nombre_mois_garantie, montant_garantie=@montant_garantie, autre_frais=@autre_frais,
        montant_autre_frais=@montant_autre_frais, date_entree=@date_entree,
        date_debut_paiement=@date_debut_paiement, statut=@statut
      WHERE id=@id AND company_id=@company_id`
@@ -426,7 +428,7 @@ router.delete('/subscriptions/:id', wrap(async (req, res) => {
 // REGLEMENTS / PAIEMENTS
 // ===========================================================================
 const PAY_SELECT = `
-  SELECT r.*, p.code AS property_code, p.type_construction, p.nombre_piece, p.cout_loyer,
+  SELECT r.*, p.code AS property_code, p.type_construction, p.nombre_piece, p.designation, p.cout_loyer,
          t.nom_prenoms AS tenant_nom, t.contact AS tenant_contact,
          s.code AS subscription_code
   FROM payments r
@@ -988,16 +990,17 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
 
   for (const o of owners) {
     const id = (await db.prepare(
-      'INSERT INTO owners (company_id, nom_prenoms, contact, email, adresse) VALUES (?,?,?,?,?)'
-    ).run(cid, clean(o.nom_prenoms) || 'Sans nom', clean(o.contact), clean(o.email), clean(o.adresse))).lastInsertRowid;
+      'INSERT INTO owners (company_id, nom_prenoms, contact, email, adresse, type_logement, pieces_logement) VALUES (?,?,?,?,?,?,?)'
+    ).run(cid, clean(o.nom_prenoms) || 'Sans nom', clean(o.contact), clean(o.email), clean(o.adresse),
+      clean(o.type_logement) || null, clean(o.pieces_logement) || null)).lastInsertRowid;
     if (o.id != null) ownerMap.set(o.id, id);
     counts.owners++;
   }
 
   for (const t of tenants) {
     const id = (await db.prepare(
-      'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse) VALUES (?,?,?,?,?)'
-    ).run(cid, clean(t.nom_prenoms) || 'Sans nom', clean(t.contact), clean(t.email), clean(t.adresse))).lastInsertRowid;
+      'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution) VALUES (?,?,?,?,?,?)'
+    ).run(cid, clean(t.nom_prenoms) || 'Sans nom', clean(t.contact), clean(t.email), clean(t.adresse), toInt(t.caution))).lastInsertRowid;
     if (t.id != null) tenantMap.set(t.id, id);
     counts.tenants++;
   }
@@ -1006,11 +1009,11 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
     const code = await uniqueCode('properties', 'MX', p.code);
     const id = (await db.prepare(
       `INSERT INTO properties
-       (company_id, code, owner_id, type_construction, nombre_piece, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+       (company_id, code, owner_id, type_construction, nombre_piece, designation, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       cid, code, ownerMap.get(p.owner_id) || null,
-      clean(p.type_construction), p.nombre_piece != null ? toInt(p.nombre_piece) : null,
+      clean(p.type_construction), p.nombre_piece != null ? toInt(p.nombre_piece) : null, clean(p.designation) || null,
       toInt(p.cout_loyer), clean(p.ville), clean(p.commune), clean(p.quartier),
       clean(p.observation), toNum(p.part_commission), p.nombre_porte != null ? toInt(p.nombre_porte) : null
     )).lastInsertRowid;
@@ -1024,13 +1027,15 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
       `INSERT INTO subscriptions
        (company_id, code, property_id, tenant_id, date_souscription, montant_loyer,
         nombre_mois_caution, montant_caution, nombre_mois_avance, montant_avance,
-        autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        nombre_mois_garantie, montant_garantie, autre_frais, montant_autre_frais,
+        date_entree, date_debut_paiement, statut)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       cid, code, propertyMap.get(s.property_id) || null, tenantMap.get(s.tenant_id) || null,
       clean(s.date_souscription) || null, toInt(s.montant_loyer),
       toInt(s.nombre_mois_caution), toInt(s.montant_caution),
       toInt(s.nombre_mois_avance), toInt(s.montant_avance),
+      toInt(s.nombre_mois_garantie), toInt(s.montant_garantie),
       clean(s.autre_frais), toInt(s.montant_autre_frais),
       clean(s.date_entree) || null, clean(s.date_debut_paiement) || null,
       clean(s.statut) || 'Active'

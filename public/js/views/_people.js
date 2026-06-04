@@ -1,7 +1,7 @@
 // Vue generique pour les "personnes" (Proprietaires et Locataires)
 import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, pageHeader } from '../core.js';
 
-export function peopleView({ endpoint, titre, singular }) {
+export function peopleView({ endpoint, titre, singular, extraFields = [], extraColumns = [], formOnChange }) {
   async function render() {
     let q = '';
     const root = el(`
@@ -29,6 +29,7 @@ export function peopleView({ endpoint, titre, singular }) {
           { label: 'Contact', render: (r) => escapeHtml(r.contact || '—') },
           { label: 'Email', render: (r) => escapeHtml(r.email || '—') },
           { label: 'Adresse', render: (r) => escapeHtml(r.adresse || '—') },
+          ...extraColumns,
         ],
         rows,
         actions: [
@@ -47,8 +48,10 @@ export function peopleView({ endpoint, titre, singular }) {
           { name: 'contact', label: 'Contact (téléphone)', required: true },
           { name: 'email', label: 'Email' },
           { name: 'adresse', label: 'Adresse', type: 'textarea' },
+          ...extraFields,
         ],
         values: row || {},
+        onChange: formOnChange,
         onSubmit: async (v) => {
           if (row) await api.put(`/api/${endpoint}/${row.id}`, v);
           else await api.post(`/api/${endpoint}`, v);

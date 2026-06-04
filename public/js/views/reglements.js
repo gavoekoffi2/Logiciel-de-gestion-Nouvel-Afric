@@ -203,8 +203,8 @@ export async function printRecu(id) {
       ${row('Nom et prénoms du locataire', `<b>${escapeHtml(r.tenant_nom || '—')}</b>`)}
       ${row('Contact', escapeHtml(r.tenant_contact || '—'))}
       ${row('Identifiant du bien', `<span style="font-family:monospace">${escapeHtml(r.property_code || '—')}</span>`)}
-      ${row('Type de construction', escapeHtml(r.type_construction || '—'))}
-      ${row('Nombre de pièces', r.nombre_piece ?? '—')}
+      ${row('Type de bien', escapeHtml(r.type_construction || '—'))}
+      ${row('Désignation', escapeHtml(r.designation || '—'))}
       ${row('Coût du loyer', fmt.money(r.cout_loyer))}
     </table>
     <table class="kv">

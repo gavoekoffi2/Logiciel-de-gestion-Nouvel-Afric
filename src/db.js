@@ -144,6 +144,8 @@ CREATE TABLE IF NOT EXISTS owners (
   contact     TEXT,
   email       TEXT,
   adresse     TEXT,
+  type_logement   TEXT,   -- 'Villa' | 'Appartement'
+  pieces_logement TEXT,   -- ex. 'Chambre salon', '3 chambres salon'
   created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -154,6 +156,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   contact     TEXT,
   email       TEXT,
   adresse     TEXT,
+  caution     INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -162,8 +165,9 @@ CREATE TABLE IF NOT EXISTS properties (
   company_id        INTEGER REFERENCES companies(id) ON DELETE CASCADE,
   code              TEXT UNIQUE NOT NULL,
   owner_id          INTEGER REFERENCES owners(id) ON DELETE SET NULL,
-  type_construction TEXT,
-  nombre_piece      INTEGER,
+  type_construction TEXT,                          -- 'RDC' | 'R+1' | 'R+2' | 'R+3'
+  nombre_piece      INTEGER,                         -- (ancien champ, conserve)
+  designation       TEXT,                            -- texte libre (ex. 'Appartement meuble')
   cout_loyer        INTEGER NOT NULL DEFAULT 0,
   ville             TEXT,
   commune           TEXT,
@@ -186,6 +190,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   montant_caution     INTEGER NOT NULL DEFAULT 0,
   nombre_mois_avance  INTEGER NOT NULL DEFAULT 0,
   montant_avance      INTEGER NOT NULL DEFAULT 0,
+  nombre_mois_garantie INTEGER NOT NULL DEFAULT 0,
+  montant_garantie    INTEGER NOT NULL DEFAULT 0,
   autre_frais         TEXT,
   montant_autre_frais INTEGER NOT NULL DEFAULT 0,
   date_entree         TEXT,
@@ -268,6 +274,12 @@ const MIGRATIONS = [
   "ALTER TABLE subscriptions ADD COLUMN company_id INTEGER",
   "ALTER TABLE payments ADD COLUMN company_id INTEGER",
   "ALTER TABLE payments ADD COLUMN payout_id INTEGER",
+  "ALTER TABLE owners ADD COLUMN type_logement TEXT",
+  "ALTER TABLE owners ADD COLUMN pieces_logement TEXT",
+  "ALTER TABLE tenants ADD COLUMN caution INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE properties ADD COLUMN designation TEXT",
+  "ALTER TABLE subscriptions ADD COLUMN nombre_mois_garantie INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE subscriptions ADD COLUMN montant_garantie INTEGER NOT NULL DEFAULT 0",
 ];
 
 // ---------------------------------------------------------------------------

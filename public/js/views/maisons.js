@@ -1,6 +1,6 @@
 import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, fmt, pageHeader, codeCell } from '../core.js';
 
-const TYPES = ["Maison à l'immeuble", 'Maison basse', 'Maison composée'];
+const TYPES = ['RDC', 'R+1', 'R+2', 'R+3'];
 
 export async function render() {
   let q = '';
@@ -37,7 +37,7 @@ export async function render() {
         { label: 'Code', render: (r) => codeCell(r.code) },
         { label: 'Propriétaire', render: (r) => escapeHtml(r.owner_nom || '—') },
         { label: 'Type', render: (r) => escapeHtml(r.type_construction || '—') },
-        { label: 'Pièces', num: true, render: (r) => r.nombre_piece ?? '—' },
+        { label: 'Désignation', render: (r) => escapeHtml(r.designation || '—') },
         { label: 'Loyer', num: true, render: (r) => fmt.money(r.cout_loyer) },
         { label: 'Localisation', render: (r) => escapeHtml([r.commune, r.quartier].filter(Boolean).join(' · ') || r.ville || '—') },
         { label: 'Commission', num: true, render: (r) => (r.part_commission || 0) + ' %' },
@@ -64,10 +64,10 @@ export async function render() {
       fields: [
         { name: 'owner_id', label: 'Propriétaire', type: 'select', required: true,
           options: owners.map((o) => ({ value: o.id, label: o.nom_prenoms })) },
-        { name: 'type_construction', label: 'Type de construction', type: 'select', required: true, options: TYPES },
-        { name: 'nombre_piece', label: 'Nombre de pièces', type: 'number', required: true, min: 0 },
+        { name: 'type_construction', label: 'Type de bien', type: 'select', required: true, options: TYPES },
+        { name: 'designation', label: 'Désignation', required: true, col: 2, placeholder: 'ex. Appartement meublé, studio, magasin…' },
         { name: 'cout_loyer', label: 'Coût du loyer (mensuel)', type: 'number', required: true, min: 0, step: 1000 },
-        { name: 'nombre_porte', label: 'Nombre de portes', type: 'number', min: 0 },
+        { name: 'nombre_porte', label: "Nombre d'appartement(s)", type: 'number', min: 0 },
         { name: 'part_commission', label: 'Part commission (%)', type: 'number', min: 0, max: 100, hint: 'Pourcentage perçu par l’agence (≤ 100).' },
         { name: 'ville', label: 'Ville' },
         { name: 'commune', label: 'Commune' },

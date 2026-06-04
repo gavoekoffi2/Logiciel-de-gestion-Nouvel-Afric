@@ -215,8 +215,12 @@ async function seed() {
     );
   }
 
+  // Jeu d'exemple (repris du fichier Excel) : utile uniquement pour decouvrir
+  // l'application en local. En production (en ligne), on demarre avec une base
+  // vierge. Forcer avec SEED_DEMO=1 si besoin.
+  const wantDemo = process.env.SEED_DEMO ? true : process.env.NODE_ENV !== 'production';
   const propCount = (await db.prepare('SELECT COUNT(*) AS n FROM properties').get()).n;
-  if (propCount === 0) {
+  if (propCount === 0 && wantDemo) {
     await seedExampleData();
   }
 }

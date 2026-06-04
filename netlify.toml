@@ -1,0 +1,25 @@
+# Configuration Netlify — héberge l'application en mode serverless.
+# Les fichiers statiques (public/) sont servis par le CDN ; l'API Express
+# tourne dans une fonction serverless (netlify/functions/api.js).
+# Données conservées dans Turso (variables TURSO_* à définir dans Netlify).
+
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NODE_ENV = "production"
+  LIBSQL_WEB = "1"
+
+[functions]
+  node_bundler = "esbuild"
+  # @libsql/client est inclus depuis node_modules (évite tout souci de bundling).
+  external_node_modules = ["@libsql/client"]
+
+# Toutes les requêtes API vont vers la fonction Express.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true

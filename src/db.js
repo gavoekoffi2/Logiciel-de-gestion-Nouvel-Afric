@@ -17,19 +17,28 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { createClient } = require('@libsql/client');
 
 // ---------------------------------------------------------------------------
-// Connexion : Turso (en ligne) si configure, sinon fichier local.
+// Connexion. Choix automatique du client libSQL :
+//   - LIBSQL_WEB defini (serverless, ex. Netlify) : client "web" pur JS (HTTP)
+//   - TURSO_DATABASE_URL defini (ex. Render)       : client natif -> Turso
+//   - sinon                                        : fichier local
 // ---------------------------------------------------------------------------
 let client;
 if (process.env.TURSO_DATABASE_URL) {
-  client = createClient({
-    url: process.env.TURSO_DATABASE_URL,
-    authToken: process.env.TURSO_AUTH_TOKEN,
-  });
-  console.log('Base de donnees : Turso (en ligne) - les donnees sont conservees.');
+  const authToken = process.env.TURSO_AUTH_TOKEN;
+  if (process.env.LIBSQL_WEB) {
+    const { createClient } = require('@libsql/client/web');
+    const url = process.env.TURSO_DATABASE_URL.replace(/^libsql:\/\//, 'https://');
+    client = createClient({ url, authToken });
+    console.log('Base de donnees : Turso (en ligne, client web/HTTP).');
+  } else {
+    const { createClient } = require('@libsql/client');
+    client = createClient({ url: process.env.TURSO_DATABASE_URL, authToken });
+    console.log('Base de donnees : Turso (en ligne) - les donnees sont conservees.');
+  }
 } else {
+  const { createClient } = require('@libsql/client');
   const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'nouvelafric.db');
   const DB_DIR = path.dirname(DB_PATH);
   if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });

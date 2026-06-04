@@ -19,6 +19,9 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
+# Netlify (état local et artefacts de build de la CLI)
+.netlify/
+
 # Editeurs
 .vscode/
 .idea/

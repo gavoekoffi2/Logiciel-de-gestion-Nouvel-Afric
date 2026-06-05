@@ -80,10 +80,7 @@ export async function render() {
         Réglez votre abonnement annuel pour réactiver l’accès. <b>Vos données sont conservées</b> (vous pouvez les exporter ci-dessous).
       </div>` : ''}
 
-      ${c.illimite ? `<div class="card card-pad">
-        <h3 style="font-size:17px;margin:0">Mon compte</h3>
-        <p class="muted" style="margin:6px 0 0;font-size:14px">Accès complet et illimité — aucun abonnement à gérer. 🎉</p>
-      </div>` : `<div class="card card-pad">
+      ${c.illimite ? '' : `<div class="card card-pad">
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
           <h3 style="font-size:17px">Mon abonnement</h3>
           ${badge(st.label, st.variant)}

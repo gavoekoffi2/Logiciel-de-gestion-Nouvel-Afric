@@ -223,8 +223,16 @@ async function renderAccount() {
     <div class="grid" style="grid-template-columns:1fr;gap:18px;max-width:560px">
       <div class="card card-pad">
         <h3 style="font-size:16px;margin-bottom:10px">Mon compte</h3>
-        <p style="margin:0 0 4px"><span class="muted">E-mail :</span> <b>${escapeHtml(store.user.email || '—')}</b></p>
+        <p style="margin:0 0 4px"><span class="muted">E-mail :</span> <b id="accEmail">${escapeHtml(store.user.email || '—')}</b></p>
         <p style="margin:0"><span class="muted">Rôle :</span> Super-administrateur</p>
+      </div>
+      <div class="card card-pad">
+        <h3 style="font-size:16px;margin-bottom:12px">Changer mon e-mail de connexion</h3>
+        <form id="emailForm" class="form-grid">
+          <div class="field"><label>Nouvel e-mail</label><input type="email" name="email" autocomplete="email" placeholder="vous@exemple.com" /></div>
+          <div class="field"><label>Mot de passe actuel</label><input type="password" name="current" autocomplete="current-password" /></div>
+          <div class="col-2" style="text-align:right"><button class="btn btn-primary" type="submit">Mettre à jour l'e-mail</button></div>
+        </form>
       </div>
       <div class="card card-pad">
         <h3 style="font-size:16px;margin-bottom:12px">Changer mon mot de passe</h3>
@@ -236,6 +244,19 @@ async function renderAccount() {
       </div>
     </div>`);
   pageHeader(root);
+
+  const emailForm = root.querySelector('#emailForm');
+  emailForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api.post('/api/auth/email', { current: emailForm.elements.current.value, email: emailForm.elements.email.value });
+      if (r.user) { store.user.email = r.user.email; store.user.username = r.user.username; }
+      const lbl = root.querySelector('#accEmail');
+      if (lbl) lbl.textContent = store.user.email || '—';
+      toast('E-mail de connexion mis à jour.');
+      emailForm.reset();
+    } catch (err) { toast(err.message, 'error'); }
+  });
 
   const pwdForm = root.querySelector('#pwdForm');
   pwdForm.addEventListener('submit', async (e) => {

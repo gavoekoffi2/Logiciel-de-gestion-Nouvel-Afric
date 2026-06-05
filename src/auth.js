@@ -186,6 +186,32 @@ router.post('/password', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Changement de son propre e-mail de connexion (tout utilisateur connecte,
+// super-admin compris). Demande le mot de passe actuel et verifie l'unicite.
+router.post('/email', async (req, res) => {
+  if (!req.session || !req.session.userId) return res.status(401).json({ error: 'Non authentifié' });
+  const current = clean((req.body || {}).current);
+  const email = clean((req.body || {}).email).toLowerCase();
+  if (!isEmail(email)) return res.status(400).json({ error: 'Adresse e-mail invalide.' });
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
+  if (!user || !verifyPassword(current, user.password)) {
+    return res.status(400).json({ error: 'Mot de passe actuel incorrect.' });
+  }
+  if (email === clean(user.email).toLowerCase()) {
+    return res.status(400).json({ error: 'C\'est déjà votre adresse e-mail actuelle.' });
+  }
+  const taken = await db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(email, user.id);
+  if (taken) return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée par un autre compte.' });
+  try {
+    await db.prepare('UPDATE users SET email = ?, username = ? WHERE id = ?').run(email, email, user.id);
+  } catch (e) {
+    return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée par un autre compte.' });
+  }
+  // Le nom affiche dans la session peut deriver de l'e-mail : on le rafraichit.
+  if (!clean(user.nom)) req.session.userNom = email;
+  res.json({ ok: true, user: publicUser({ ...user, email, username: email }) });
+});
+
 module.exports = {
   router,
   requireAuth,

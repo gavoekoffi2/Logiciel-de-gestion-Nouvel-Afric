@@ -50,9 +50,9 @@ app.use('/api/auth', authRouter);
 app.get('/api/branding', async (req, res) => {
   try {
     const p = await db.prepare('SELECT nom FROM platform WHERE id = 1').get();
-    res.json({ entreprise: (p && p.nom) || 'Nouvel Afric', logo: null });
+    res.json({ entreprise: (p && p.nom) || 'MaGérance', logo: null });
   } catch (_) {
-    res.json({ entreprise: 'Nouvel Afric', logo: null });
+    res.json({ entreprise: 'MaGérance', logo: null });
   }
 });
 

@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS companies (
 -- aux entreprises pour s'abonner (contact + tarif annuel).
 CREATE TABLE IF NOT EXISTS platform (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
-  nom               TEXT NOT NULL DEFAULT 'Nouvel Afric',
+  nom               TEXT NOT NULL DEFAULT 'MaGérance',
   contact_telephone TEXT,
   contact_whatsapp  TEXT,
   contact_email     TEXT,
@@ -403,7 +403,7 @@ async function seedPlatform() {
     `INSERT INTO platform (id, nom, contact_telephone, contact_whatsapp, contact_email, prix_annuel, devise, message)
      VALUES (1, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
-    'Nouvel Afric',
+    'MaGérance',
     '+228 90 00 00 00',
     '+228 90 00 00 00',
     'contact@nouvelafric.tg',

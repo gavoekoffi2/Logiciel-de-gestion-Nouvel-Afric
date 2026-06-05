@@ -218,7 +218,7 @@ router.put('/settings', wrap(async (req, res) => {
     `UPDATE platform SET nom=?, contact_telephone=?, contact_whatsapp=?, contact_email=?,
        prix_annuel=?, devise=?, message=? WHERE id=1`
   ).run(
-    clean(b.nom) || 'Nouvel Afric',
+    clean(b.nom) || 'MaGérance',
     clean(b.contact_telephone),
     clean(b.contact_whatsapp),
     clean(b.contact_email),

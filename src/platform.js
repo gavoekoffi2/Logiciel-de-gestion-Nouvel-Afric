@@ -102,8 +102,8 @@ router.post('/companies', wrap(async (req, res) => {
   ).run(entreprise, telephone, email, statut, essaiFin, abonnementFin)).lastInsertRowid;
 
   await db.prepare(
-    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'admin', ?)"
-  ).run(email, hashPassword(password), nom, companyId);
+    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'admin', ?)"
+  ).run(email, email, hashPassword(password), nom, companyId);
 
   const c = await db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
   res.json(await companyView(c));

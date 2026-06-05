@@ -116,8 +116,8 @@ router.post('/register', async (req, res) => {
     ).run(entreprise, telephone, email, essaiFin)).lastInsertRowid;
 
     const userId = (await db.prepare(
-      "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'admin', ?)"
-    ).run(email, hashPassword(password), nom, companyId)).lastInsertRowid;
+      "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'admin', ?)"
+    ).run(email, email, hashPassword(password), nom, companyId)).lastInsertRowid;
 
     req.session.userId = userId;
     req.session.role = 'admin';

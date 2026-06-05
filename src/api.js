@@ -1057,8 +1057,8 @@ router.post('/users', requireRole('admin'), wrap(async (req, res) => {
     return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée.' });
   }
   const info = await db.prepare(
-    'INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, ?, ?)'
-  ).run(email, hashPassword(password), nom, role, cid);
+    'INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(email, email, hashPassword(password), nom, role, cid);
   await logAction(req, 'Création', 'Utilisateur', nom || email);
   res.json(publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid)));
 }));

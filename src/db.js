@@ -419,8 +419,8 @@ async function seedSuperAdmin() {
   const email = (process.env.SUPERADMIN_EMAIL || 'superadmin@nouvelafric.tg').trim().toLowerCase();
   const password = process.env.SUPERADMIN_PASSWORD || 'SuperAdmin2025';
   await db.prepare(
-    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'superadmin', NULL)"
-  ).run(email, hashPassword(password), 'Super administrateur');
+    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'superadmin', NULL)"
+  ).run(email, email, hashPassword(password), 'Super administrateur');
   console.log(`Super-administrateur cree : ${email} (pensez a changer le mot de passe).`);
 }
 
@@ -482,11 +482,11 @@ async function seedDemoCompany() {
   )).lastInsertRowid;
 
   await db.prepare(
-    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'admin', ?)"
-  ).run('demo@immobiliergolfe.tg', hashPassword('demo1234'), 'Komla MENSAH', companyId);
+    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'admin', ?)"
+  ).run('demo@immobiliergolfe.tg', 'demo@immobiliergolfe.tg', hashPassword('demo1234'), 'Komla MENSAH', companyId);
   await db.prepare(
-    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (NULL, ?, ?, ?, 'secretaire', ?)"
-  ).run('secretaire@immobiliergolfe.tg', hashPassword('demo1234'), 'Afi ADJAVON', companyId);
+    "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'secretaire', ?)"
+  ).run('secretaire@immobiliergolfe.tg', 'secretaire@immobiliergolfe.tg', hashPassword('demo1234'), 'Afi ADJAVON', companyId);
 
   const ownerId = (await db
     .prepare('INSERT INTO owners (company_id, nom_prenoms, contact) VALUES (?,?,?)')
@@ -547,7 +547,11 @@ async function init() {
   await migrateLegacyData();
 
   // Demo : uniquement hors production, et seulement si aucune entreprise.
-  const wantDemo = process.env.SEED_DEMO ? true : process.env.NODE_ENV !== 'production';
+  // La demo n'est JAMAIS creee sur la base en ligne (Turso) sauf SEED_DEMO explicite,
+  // pour ne pas polluer les donnees de production meme si NODE_ENV n'est pas vu.
+  const wantDemo = process.env.SEED_DEMO
+    ? true
+    : (process.env.NODE_ENV !== 'production' && !process.env.TURSO_DATABASE_URL);
   const companyCount = (await db.prepare('SELECT COUNT(*) AS n FROM companies').get()).n;
   if (wantDemo && companyCount === 0) {
     await seedDemoCompany();

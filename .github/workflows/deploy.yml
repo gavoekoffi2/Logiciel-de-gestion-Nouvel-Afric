@@ -1,0 +1,40 @@
+name: Déploiement Netlify (automatique)
+
+# Déploie le site sur Netlify à chaque push sur la branche de travail,
+# et permet aussi un déclenchement manuel depuis l'onglet "Actions".
+on:
+  push:
+    branches:
+      - claude/practical-cray-gjRsH
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Installer les dépendances
+        run: npm install
+
+      - name: Déployer sur Netlify
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: 420362b8-1c04-4223-92e0-a23e59671159
+        run: |
+          if [ -z "$NETLIFY_AUTH_TOKEN" ]; then
+            echo "::error::Le secret NETLIFY_AUTH_TOKEN est manquant. Ajoute-le dans :"
+            echo "::error::Settings > Secrets and variables > Actions > New repository secret"
+            exit 1
+          fi
+          npx --yes netlify-cli@26 deploy --prod \
+            --dir=public \
+            --functions=netlify/functions \
+            --site "$NETLIFY_SITE_ID" \
+            --message "Déploiement auto ${GITHUB_SHA::7}"

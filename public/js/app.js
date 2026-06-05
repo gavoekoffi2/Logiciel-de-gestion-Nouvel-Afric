@@ -68,11 +68,16 @@ function navSep(text) {
   d.textContent = text;
   return d;
 }
+// Libelle d'une route — pour un compte illimite, "Mon abonnement" devient "Mon compte".
+function labelFor(key) {
+  if (key === 'abonnement' && store.company && store.company.illimite) return 'Mon compte';
+  return routesFor()[key].label;
+}
 function navLink(key) {
   const r = routesFor()[key];
   const a = document.createElement('a');
   a.dataset.route = key;
-  a.innerHTML = `${icon(r.icon)}<span>${r.label}</span>`;
+  a.innerHTML = `${icon(r.icon)}<span>${labelFor(key)}</span>`;
   a.onclick = () => { location.hash = '#/' + key; };
   return a;
 }
@@ -89,7 +94,7 @@ async function renderRoute() {
 
   document.querySelectorAll('.nav a').forEach((a) =>
     a.classList.toggle('active', a.dataset.route === key));
-  document.getElementById('pageTitle').textContent = routes[key].label;
+  document.getElementById('pageTitle').textContent = labelFor(key);
   closeSidebar();
 
   const content = document.getElementById('content');

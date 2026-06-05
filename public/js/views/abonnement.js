@@ -55,12 +55,8 @@ export async function render() {
   if (p.contact_whatsapp) contactLignes.push(`💬 WhatsApp : <a href="${waLink(p.contact_whatsapp)}" target="_blank" rel="noopener"><b>${escapeHtml(p.contact_whatsapp)}</b></a>`);
   if (p.contact_email) contactLignes.push(`✉️ E-mail : <a href="mailto:${escapeHtml(p.contact_email)}"><b>${escapeHtml(p.contact_email)}</b></a>`);
 
-  // Carte tarif/contact : inutile si l'entreprise a un abonnement illimite.
-  const carteAbonnement = c.illimite ? `
-      <div class="card card-pad">
-        <h3 style="font-size:16px;margin-bottom:4px">Abonnement illimité 🎉</h3>
-        <p class="muted" style="margin:0;font-size:14px">Vous bénéficiez d’un accès illimité, sans date d’expiration. Merci de votre confiance.</p>
-      </div>` : `
+  // Carte tarif/contact : masquee si l'entreprise a un abonnement illimite.
+  const carteAbonnement = c.illimite ? '' : `
       <div class="card card-pad">
         <h3 style="font-size:16px;margin-bottom:4px">Abonnement annuel</h3>
         <div style="font-size:26px;font-weight:800;color:var(--brand);margin:6px 0 2px">${money(p.prix_annuel, dev)} <span style="font-size:14px;color:var(--muted);font-weight:600">/ an</span></div>
@@ -84,14 +80,17 @@ export async function render() {
         Réglez votre abonnement annuel pour réactiver l’accès. <b>Vos données sont conservées</b> (vous pouvez les exporter ci-dessous).
       </div>` : ''}
 
-      <div class="card card-pad">
+      ${c.illimite ? `<div class="card card-pad">
+        <h3 style="font-size:17px;margin:0">Mon compte</h3>
+        <p class="muted" style="margin:6px 0 0;font-size:14px">Accès complet et illimité — aucun abonnement à gérer. 🎉</p>
+      </div>` : `<div class="card card-pad">
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
           <h3 style="font-size:17px">Mon abonnement</h3>
           ${badge(st.label, st.variant)}
         </div>
         <p class="muted" style="margin:0;font-size:14px">${echeanceLigne}</p>
         ${dejaDemande}
-      </div>
+      </div>`}
 
       ${carteAbonnement}
 

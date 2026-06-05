@@ -23,3 +23,21 @@
   to = "/.netlify/functions/api/:splat"
   status = 200
   force = true
+
+# Anti-cache sur l'app (HTML/JS/CSS) : le navigateur revalide à chaque chargement
+# (réponse 304 si rien n'a changé), donc les utilisateurs voient toujours la
+# dernière version après un déploiement, sans avoir à forcer le rafraîchissement.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/js/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/css/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"

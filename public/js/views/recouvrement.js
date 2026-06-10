@@ -82,8 +82,8 @@ export async function render() {
         <td style="${td}">${escapeHtml(l.tenant_nom || '—')}</td>
         <td style="${td}">${escapeHtml(l.designation || '—')}</td>
         <td style="${tn}">${fmt.money(l.loyer)}</td>
-        <td style="${tn}">${l.mois_payes}</td>
-        <td style="${tn}">${l.mois_dus > 0 ? `<b style="color:#b45309">${l.mois_dus}</b>` : 0}</td>
+        <td style="${tn}">${l.mois_payes}<br><span class="muted">${escapeHtml((l.mois_payes_liste || []).join(', ') || '—')}</span>${l.mois_credit ? `<br><span style="color:#0f6e4f;font-size:12px">Crédit: ${escapeHtml((l.mois_credit_liste || []).join(', '))}</span>` : ''}</td>
+        <td style="${tn}">${l.mois_dus > 0 ? `<b style="color:#b45309">${l.mois_dus}</b><br><span class="muted">${escapeHtml((l.mois_dus_liste || []).join(', '))}</span>` : 0}</td>
         <td style="${tn}">${fmt.money(l.montant_du)}</td>
         <td style="${tn}">${fmt.money(l.montant_paye)}</td>
         <td style="${tn}">${l.ecart > 0 ? `<b style="color:#b91c1c">${fmt.money(l.ecart)}</b>` : fmt.money(0)}</td>
@@ -203,7 +203,7 @@ function printReport(d) {
       for (const l of m.locataires) {
         body += `<tr>
           <td style="${tdc}">${escapeHtml(l.tenant_nom || '—')}</td><td style="${tdc}">${escapeHtml(l.designation || '—')}</td>
-          <td style="${tdr}">${money(l.loyer)}</td><td style="${tdr}">${l.mois_payes}</td><td style="${tdr}">${l.mois_dus}</td>
+          <td style="${tdr}">${money(l.loyer)}</td><td style="${tdr}">${l.mois_payes}<br>${escapeHtml((l.mois_payes_liste || []).join(', ') || '—')}</td><td style="${tdr}">${l.mois_dus}<br>${escapeHtml((l.mois_dus_liste || []).join(', ') || '—')}</td>
           <td style="${tdr}">${money(l.montant_du)}</td><td style="${tdr}">${money(l.montant_paye)}</td><td style="${tdr}">${money(l.ecart)}</td>
           <td style="${tdc}">${escapeHtml(l.numero_recu || '—')}</td>
         </tr>`;

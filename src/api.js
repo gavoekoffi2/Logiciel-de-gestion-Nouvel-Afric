@@ -17,6 +17,7 @@ const express = require('express');
 const { db, hashPassword, computeSubscription } = require('./db');
 const { requireRole, publicUser, companyState } = require('./auth');
 const { isNoSubscriptionCompanyName } = require('./companyPolicy');
+const { normalizePaidMonths, parsePeriods, buildPaidMonthMap, summarizeRecoveryMonths } = require('./paymentPeriods');
 
 const router = express.Router();
 const settingsRouter = express.Router();
@@ -723,20 +724,15 @@ router.get('/recouvrement', wrap(async (req, res) => {
        LEFT JOIN tenants t ON t.id = s.tenant_id
        WHERE s.company_id = ? AND s.statut = 'Active'`
     ).all(cid),
-    db.prepare('SELECT subscription_id, mois_concerne, annee_concernee, montant_paye, numero_recu FROM payments WHERE company_id = ?').all(cid),
+    db.prepare('SELECT subscription_id, mois_concerne, annee_concernee, mois_payes, nombre_mois_payes, montant_paye, numero_recu FROM payments WHERE company_id = ?').all(cid),
     db.prepare('SELECT property_id, montant FROM repairs WHERE company_id = ? AND mois = ? AND annee = ?').all(cid, moisSel, anneeSel),
   ]);
 
   const within = (mo, an) => (an < anneeSel || (an === anneeSel && (MOIS.indexOf(mo) + 1) <= emIndex));
-  const payBySub = new Map();
-  for (const p of pays) {
-    if (!within(p.mois_concerne, p.annee_concernee)) continue;
-    let e = payBySub.get(p.subscription_id);
-    if (!e) { e = { byPeriod: {}, total: 0, lastRecu: null }; payBySub.set(p.subscription_id, e); }
-    e.byPeriod[`${p.annee_concernee}-${p.mois_concerne}`] = (e.byPeriod[`${p.annee_concernee}-${p.mois_concerne}`] || 0) + (p.montant_paye || 0);
-    e.total += p.montant_paye || 0;
-    if (p.numero_recu) e.lastRecu = p.numero_recu;
-  }
+  const payBySub = buildPaidMonthMap(pays.filter((p) => {
+    const periods = parsePeriods(p.mois_payes, p.mois_concerne, p.annee_concernee);
+    return periods.some((per) => within(per.mois, per.annee));
+  }));
   const repByProp = new Map();
   for (const r of reps) repByProp.set(r.property_id, (repByProp.get(r.property_id) || 0) + (r.montant || 0));
 
@@ -744,13 +740,10 @@ router.get('/recouvrement', wrap(async (req, res) => {
   for (const s of subs) {
     const loyer = s.montant_loyer || 0;
     const months = monthsUntil(s.date_debut_paiement, anneeSel, emIndex);
-    const pe = payBySub.get(s.id) || { byPeriod: {}, total: 0, lastRecu: null };
-    let moisPayes = 0;
-    for (const mm of months) {
-      if (loyer > 0 && (pe.byPeriod[`${mm.annee}-${mm.mois}`] || 0) >= loyer) moisPayes += 1;
-    }
-    const montantDu = months.length * loyer;
-    const montantPaye = pe.total;
+    const pe = payBySub.get(s.id) || { paid: new Map(), total: 0, lastRecu: null };
+    const summary = summarizeRecoveryMonths(months, pe, loyer);
+    const montantDu = summary.montant_du;
+    const montantPaye = summary.montant_paye;
 
     let M = maisons.get(s.property_id);
     if (!M) {
@@ -764,8 +757,10 @@ router.get('/recouvrement', wrap(async (req, res) => {
     }
     M.locataires.push({
       tenant_nom: s.tenant_nom, designation: s.designation, loyer,
-      mois_payes: moisPayes, mois_dus: Math.max(0, months.length - moisPayes),
-      montant_du: montantDu, montant_paye: montantPaye, ecart: Math.max(0, montantDu - montantPaye),
+      mois_payes: summary.mois_payes, mois_payes_liste: summary.mois_payes_liste,
+      mois_dus: summary.mois_dus, mois_dus_liste: summary.mois_dus_liste,
+      mois_credit: summary.mois_credit, mois_credit_liste: summary.mois_credit_liste,
+      montant_du: montantDu, montant_paye: montantPaye, ecart: summary.ecart,
       avance: s.montant_avance || 0, numero_recu: pe.lastRecu,
     });
     M.total_du += montantDu;
@@ -849,18 +844,29 @@ async function paymentPayload(body, companyId) {
   }
 
   const montant_paye = toInt(body.montant_paye);
-  const reste = Math.max(0, montant_a_payer - montant_paye);
+  const normalized = normalizePaidMonths({
+    ...body,
+    montant_a_payer,
+    montant_paye,
+    loyer: montant_a_payer,
+  });
+  const duePeriods = parsePeriods(body.mois_dus, null, body.annee_concernee);
+  const reste = normalized.reste;
   return {
     subscription_id,
     property_id,
     tenant_id,
     date: clean(body.date),
-    montant_a_payer,
+    montant_a_payer: normalized.amountDue,
     montant_paye,
     reste_a_payer: reste,
-    mois_concerne: clean(body.mois_concerne),
-    annee_concernee: toInt(body.annee_concernee),
-    statut: reste <= 0 ? 'Soldé' : 'Non soldé',
+    mois_concerne: normalized.primary.mois,
+    annee_concernee: normalized.primary.annee,
+    nombre_mois_payes: normalized.count,
+    mois_payes: JSON.stringify(normalized.months),
+    nombre_mois_dus: duePeriods.length || toInt(body.nombre_mois_dus),
+    mois_dus: duePeriods.length ? JSON.stringify(duePeriods) : clean(body.mois_dus),
+    statut: normalized.status,
     numero_recu: clean(body.numero_recu),
   };
 }
@@ -868,7 +874,7 @@ async function paymentPayload(body, companyId) {
 function validatePayment(r) {
   if (!r.property_id) return 'Veuillez sélectionner la souscription / le bien concerné.';
   if (!r.tenant_id) return 'Le locataire est requis.';
-  if (!r.mois_concerne) return 'Veuillez sélectionner le mois concerné.';
+  if (!r.mois_concerne) return 'Veuillez sélectionner au moins un mois payé.';
   if (!r.annee_concernee) return 'Veuillez saisir l’année concernée.';
   if (!r.montant_paye) return 'Veuillez saisir le montant payé.';
   return null;
@@ -883,9 +889,9 @@ router.post('/payments', wrap(async (req, res) => {
   const info = await db.prepare(
     `INSERT INTO payments
      (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye,
-      reste_a_payer, mois_concerne, annee_concernee, statut, numero_recu)
+      reste_a_payer, mois_concerne, annee_concernee, nombre_mois_payes, mois_payes, nombre_mois_dus, mois_dus, statut, numero_recu)
      VALUES (@company_id,@code,@subscription_id,@property_id,@tenant_id,@date,@montant_a_payer,@montant_paye,
-      @reste_a_payer,@mois_concerne,@annee_concernee,@statut,@numero_recu)`
+      @reste_a_payer,@mois_concerne,@annee_concernee,@nombre_mois_payes,@mois_payes,@nombre_mois_dus,@mois_dus,@statut,@numero_recu)`
   ).run({ company_id: cid, code, ...r });
   await logAction(req, 'Création', 'Règlement', `${code} (${r.mois_concerne || ''} ${r.annee_concernee || ''})`.trim());
   res.json(await db.prepare(`${PAY_SELECT} WHERE r.id = ?`).get(info.lastInsertRowid));
@@ -901,7 +907,9 @@ router.put('/payments/:id', wrap(async (req, res) => {
     `UPDATE payments SET
        subscription_id=@subscription_id, property_id=@property_id, tenant_id=@tenant_id, date=@date,
        montant_a_payer=@montant_a_payer, montant_paye=@montant_paye, reste_a_payer=@reste_a_payer,
-       mois_concerne=@mois_concerne, annee_concernee=@annee_concernee, statut=@statut, numero_recu=@numero_recu
+       mois_concerne=@mois_concerne, annee_concernee=@annee_concernee,
+       nombre_mois_payes=@nombre_mois_payes, mois_payes=@mois_payes, nombre_mois_dus=@nombre_mois_dus, mois_dus=@mois_dus,
+       statut=@statut, numero_recu=@numero_recu
      WHERE id=@id AND company_id=@company_id`
   ).run({ id, company_id: cid, ...r });
   const updated = await db.prepare(`${PAY_SELECT} WHERE r.id = ? AND r.company_id = ?`).get(id, cid);
@@ -940,10 +948,10 @@ router.post('/payments/bulk', wrap(async (req, res) => {
     await db.prepare(
       `INSERT INTO payments
        (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye,
-        reste_a_payer, mois_concerne, annee_concernee, statut)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+        reste_a_payer, mois_concerne, annee_concernee, nombre_mois_payes, mois_payes, nombre_mois_dus, mois_dus, statut)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(cid, code, sub.id, sub.property_id, sub.tenant_id, date || null,
-      sub.montant_loyer, sub.montant_loyer, 0, mois, annee, 'Soldé');
+      sub.montant_loyer, sub.montant_loyer, 0, mois, annee, 1, JSON.stringify([{ mois, annee }]), 0, '', 'Soldé');
     crees++;
   }
   if (crees > 0) await logAction(req, 'Création', 'Règlement', `Encaissement du mois : ${crees} loyer(s) — ${mois} ${annee}`);

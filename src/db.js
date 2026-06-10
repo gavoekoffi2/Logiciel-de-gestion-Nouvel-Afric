@@ -235,6 +235,10 @@ CREATE TABLE IF NOT EXISTS payments (
   reste_a_payer   INTEGER NOT NULL DEFAULT 0,
   mois_concerne   TEXT,
   annee_concernee INTEGER,
+  nombre_mois_payes INTEGER NOT NULL DEFAULT 1,
+  mois_payes      TEXT,
+  nombre_mois_dus INTEGER NOT NULL DEFAULT 0,
+  mois_dus        TEXT,
   statut          TEXT NOT NULL DEFAULT 'Soldé',  -- 'Soldé' | 'Non soldé'
   payout_id       INTEGER REFERENCES payouts(id) ON DELETE SET NULL,  -- reversement couvrant ce loyer
   numero_recu     TEXT,                            -- numero du recu physique remis au locataire
@@ -314,6 +318,10 @@ const MIGRATIONS = [
   "ALTER TABLE subscriptions ADD COLUMN nombre_mois_garantie INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE subscriptions ADD COLUMN montant_garantie INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE payments ADD COLUMN numero_recu TEXT",
+  "ALTER TABLE payments ADD COLUMN nombre_mois_payes INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE payments ADD COLUMN mois_payes TEXT",
+  "ALTER TABLE payments ADD COLUMN nombre_mois_dus INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE payments ADD COLUMN mois_dus TEXT",
 ];
 
 // ---------------------------------------------------------------------------

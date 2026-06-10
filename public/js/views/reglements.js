@@ -3,6 +3,29 @@ import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, 
 const anneeCourante = new Date().getFullYear();
 const moisCourant = MOIS[new Date().getMonth()];
 
+function parseMonthText(txt, year) {
+  return String(txt || '').split(',').map((m) => m.trim()).filter(Boolean).map((mois) => ({ mois, annee: Number(year) || anneeCourante }));
+}
+function monthListText(raw, fallbackMonth, fallbackYear) {
+  if (raw) {
+    try { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr.map((m) => `${m.mois} ${m.annee}`).join(', '); } catch (_) { return String(raw); }
+  }
+  return fallbackMonth ? `${fallbackMonth} ${fallbackYear || ''}`.trim() : '—';
+}
+function monthsPayload(v) {
+  const paid = parseMonthText(v.mois_payes_txt || v.mois_concerne, v.annee_concernee);
+  const due = parseMonthText(v.mois_dus_txt, v.annee_concernee);
+  return {
+    ...v,
+    mois_payes: JSON.stringify(paid),
+    nombre_mois_payes: paid.length,
+    mois_concerne: paid[0] && paid[0].mois,
+    annee_concernee: paid[0] && paid[0].annee,
+    mois_dus: due.length ? JSON.stringify(due) : '',
+    nombre_mois_dus: due.length,
+  };
+}
+
 export async function render() {
   const filtre = { q: '', mois: '', annee: '', statut: '' };
   const annees = [];
@@ -37,7 +60,8 @@ export async function render() {
         { label: 'Code', render: (r) => codeCell(r.code) },
         { label: 'Locataire', render: (r) => `<b>${escapeHtml(r.tenant_nom || '—')}</b>` },
         { label: 'Bien', render: (r) => codeCell(r.property_code) },
-        { label: 'Période', render: (r) => `${escapeHtml(r.mois_concerne || '—')} ${r.annee_concernee || ''}` },
+        { label: 'Mois payés', render: (r) => `${r.nombre_mois_payes || 1} mois<br><span class="muted">${escapeHtml(monthListText(r.mois_payes, r.mois_concerne, r.annee_concernee))}</span>` },
+        { label: 'Mois dûs', render: (r) => r.nombre_mois_dus ? `${r.nombre_mois_dus} mois<br><span class="muted">${escapeHtml(monthListText(r.mois_dus))}</span>` : '—' },
         { label: 'À payer', num: true, render: (r) => fmt.money(r.montant_a_payer) },
         { label: 'Payé', num: true, render: (r) => fmt.money(r.montant_paye) },
         { label: 'Reste', num: true, render: (r) => r.reste_a_payer > 0 ? `<span style="color:#b91c1c;font-weight:700">${fmt.money(r.reste_a_payer)}</span>` : fmt.money(0) },
@@ -70,33 +94,49 @@ export async function render() {
           options: active.map((s) => ({ value: s.id, label: `${s.tenant_nom} — ${s.property_code} (${fmt.money(s.montant_loyer)})` })) },
         { name: '_bien', label: 'Bien', readonly: true },
         { name: '_locataire', label: 'Locataire', readonly: true },
-        { name: 'montant_a_payer', label: 'Montant à payer', type: 'number', min: 0 },
+        { name: 'montant_a_payer', label: 'Montant à payer total', type: 'number', min: 0 },
         { name: 'montant_paye', label: 'Montant payé', type: 'number', required: true, min: 0 },
         { name: 'reste_a_payer', label: 'Reste à payer', type: 'number', readonly: true },
-        { name: 'mois_concerne', label: 'Mois concerné', type: 'select', required: true, options: MOIS },
         { name: 'annee_concernee', label: 'Année concernée', type: 'number', required: true },
+        { name: 'mois_payes_txt', label: 'Mois payés (séparer par virgule)', required: true, col: 2, placeholder: 'ex. Janvier, Février' },
+        { name: 'nombre_mois_payes', label: 'Nombre de mois payés', type: 'number', readonly: true },
+        { name: 'mois_dus_txt', label: 'Mois encore dûs après ce paiement', col: 2, placeholder: 'ex. Mars, Avril' },
+        { name: 'nombre_mois_dus', label: 'Nombre de mois dûs', type: 'number', readonly: true },
+        { name: 'mois_concerne', label: 'Premier mois payé', type: 'hidden' },
         { name: 'date', label: 'Date du paiement', type: 'date' },
         { name: 'numero_recu', label: 'N° de reçu', placeholder: 'ex. 269' },
       ],
       values: row
-        ? { ...row, _bien: row.property_code, _locataire: row.tenant_nom }
-        : { date: fmt.today(), annee_concernee: anneeCourante, mois_concerne: moisCourant },
+        ? { ...row, _bien: row.property_code, _locataire: row.tenant_nom, mois_payes_txt: monthListText(row.mois_payes, row.mois_concerne, row.annee_concernee).replace(/ \d{4}/g, ''), mois_dus_txt: row.mois_dus ? monthListText(row.mois_dus).replace(/ \d{4}/g, '') : '' }
+        : { date: fmt.today(), annee_concernee: anneeCourante, mois_concerne: moisCourant, mois_payes_txt: moisCourant, nombre_mois_payes: 1, nombre_mois_dus: 0 },
       onChange: (v, changed, set) => {
         if (changed === 'subscription_id') {
           const s = subMap[String(v.subscription_id)];
           if (s) {
             set('_bien', s.property_code || '');
             set('_locataire', s.tenant_nom || '');
-            set('montant_a_payer', s.montant_loyer);
-            set('montant_paye', s.montant_loyer);
-            v.montant_a_payer = s.montant_loyer; v.montant_paye = s.montant_loyer;
+            const paidCount = parseMonthText(v.mois_payes_txt || moisCourant, v.annee_concernee).length || 1;
+            set('montant_a_payer', s.montant_loyer * paidCount);
+            set('montant_paye', s.montant_loyer * paidCount);
+            v.montant_a_payer = s.montant_loyer * paidCount; v.montant_paye = s.montant_loyer * paidCount;
           }
+        }
+        const paid = parseMonthText(v.mois_payes_txt || v.mois_concerne, v.annee_concernee);
+        const due = parseMonthText(v.mois_dus_txt, v.annee_concernee);
+        set('nombre_mois_payes', paid.length);
+        set('nombre_mois_dus', due.length);
+        const sub = subMap[String(v.subscription_id)];
+        if (sub && (changed === 'mois_payes_txt' || changed === 'annee_concernee')) {
+          const totalDue = sub.montant_loyer * Math.max(1, paid.length);
+          set('montant_a_payer', totalDue);
+          v.montant_a_payer = totalDue;
         }
         const reste = Math.max(0, (Number(v.montant_a_payer) || 0) - (Number(v.montant_paye) || 0));
         set('reste_a_payer', reste);
       },
       onSubmit: async (v) => {
-        const saved = row ? await api.put('/api/payments/' + row.id, v) : await api.post('/api/payments', v);
+        const payload = monthsPayload(v);
+        const saved = row ? await api.put('/api/payments/' + row.id, payload) : await api.post('/api/payments', payload);
         toast(row ? 'Règlement modifié.' : 'Paiement enregistré.');
         load();
         if (!row && saved && saved.id) {
@@ -212,7 +252,8 @@ export async function printRecu(id) {
     <table class="kv">
       <tr class="montant-fort"><td class="k"><b>Montant payé par le locataire</b></td><td class="v">${fmt.money(r.montant_paye)}</td></tr>
       ${row('Montant en lettres', `<span class="lettres">${escapeHtml(capitalize(montantEnLettres(r.montant_paye)))} franc(s) CFA</span>`)}
-      ${row('Mois concerné', `${escapeHtml(r.mois_concerne || '—')} ${r.annee_concernee || ''}`)}
+      ${row('Mois payés', `${r.nombre_mois_payes || 1} mois — ${escapeHtml(monthListText(r.mois_payes, r.mois_concerne, r.annee_concernee))}`)}
+      ${r.nombre_mois_dus ? row('Mois restant dûs', `${r.nombre_mois_dus} mois — ${escapeHtml(monthListText(r.mois_dus))}`) : ''}
       ${row('Reste à payer', r.reste_a_payer > 0 ? `<b style="color:#b91c1c">${fmt.money(r.reste_a_payer)}</b>` : fmt.money(0))}
     </table>
     <div class="sign" style="margin-top:40px">

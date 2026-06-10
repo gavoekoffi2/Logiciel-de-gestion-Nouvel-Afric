@@ -61,7 +61,7 @@ export async function render() {
       <div class="toolbar">
         <div class="search">${icon('search', 17)}<input type="text" id="search" placeholder="Rechercher un locataire ou son bien…" /></div>
         <div class="spacer"></div>
-        <button class="btn btn-primary" id="addBtn">${icon('plus', 17)} Ajouter un locataire avec son bien</button>
+        <button class="btn btn-primary" id="addBtn">${icon('plus', 17)} Ajouter un locataire</button>
       </div>
       <div id="list"></div>
     </div>`);
@@ -92,8 +92,6 @@ export async function render() {
   }
 
   async function openForm(row) {
-    const props = row ? [] : await api.get('/api/properties/available');
-    const propMap = Object.fromEntries(props.map((p) => [String(p.id), p]));
     const fields = [
       { name: 'nom_prenoms', label: 'Nom et prénoms', required: true, col: 2 },
       { name: 'contact', label: 'Contact (téléphone)', required: true },
@@ -104,21 +102,18 @@ export async function render() {
     ];
     if (!row) {
       fields.push(
-        { name: 'property_id', label: 'Bien occupé par ce locataire', type: 'select', required: true,
-          options: props.map((p) => ({ value: p.id, label: `${p.code} — ${p.type_construction || ''}${p.designation ? ' — ' + p.designation : ''} — ${fmt.money(p.cout_loyer)}` })) },
         { name: 'date_souscription', label: 'Date de souscription', type: 'date' },
         { name: 'montant_loyer', label: 'Montant du loyer', type: 'number', readonly: true },
         { name: 'nombre_mois_caution', label: 'Nombre de mois de caution', type: 'number', min: 0 },
         { name: 'montant_caution', label: 'Montant caution', type: 'number', readonly: true },
-        { name: 'nombre_mois_avance', label: 'Nombre de mois d’avance', type: 'number', min: 0 },
-        { name: 'montant_avance', label: 'Montant avance', type: 'number', readonly: true },
         { name: 'nombre_mois_garantie', label: 'Nombre de mois de garantie', type: 'number', min: 0 },
         { name: 'montant_garantie', label: 'Montant garantie', type: 'number', readonly: true },
+        { name: 'nombre_mois_avance', label: 'Nombre de mois d’avance', type: 'number', min: 0 },
+        { name: 'montant_avance', label: 'Montant avance', type: 'number', readonly: true },
         { name: 'date_entree', label: 'Date d’entrée', type: 'date', required: true },
         { name: 'date_debut_paiement', label: 'Date début de paiement', type: 'date', required: true },
         { name: 'statut', label: 'Statut du bail', type: 'select', options: ['Active', 'Desactive'] },
       );
-      if (props.length === 0) { toast('Aucun bien disponible. Ajoutez ou libérez un bien avant de créer un locataire lié.', 'error'); return; }
     }
     const initial = row ? feesToFormValues(row) : {
       date_souscription: fmt.today(), date_entree: fmt.today(), date_debut_paiement: fmt.today(),
@@ -126,15 +121,11 @@ export async function render() {
       montant_autre_frais: 0, statut: 'Active',
     };
     formModal({
-      title: row ? 'Modifier le locataire' : 'Nouveau locataire + bien occupé',
+      title: row ? 'Modifier le locataire' : 'Nouveau locataire',
       size: 'lg',
       fields,
       values: initial,
       onChange: (v, changed, set) => {
-        if (!row && changed === 'property_id') {
-          const p = propMap[String(v.property_id)];
-          if (p) { set('montant_loyer', p.cout_loyer); v.montant_loyer = p.cout_loyer; }
-        }
         const loyer = Number(v.montant_loyer) || 0;
         if (!row) {
           set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
@@ -147,7 +138,7 @@ export async function render() {
         const payload = { ...v, ...serializeFees(v) };
         if (row) await api.put('/api/tenants/' + row.id, payload);
         else await api.post('/api/tenants', payload);
-        toast(row ? 'Locataire modifié.' : 'Locataire ajouté et rattaché au bien.');
+        toast(row ? 'Locataire modifié.' : 'Locataire ajouté.');
         load();
       },
     });

@@ -16,6 +16,7 @@ const express = require('express');
 const {
   db, hashPassword, verifyPassword, computeSubscription, addDaysYMD, TRIAL_DAYS,
 } = require('./db');
+const { isNoSubscriptionCompanyName, noSubscriptionValueForCompany } = require('./companyPolicy');
 
 const router = express.Router();
 
@@ -33,10 +34,22 @@ async function companyState(companyId) {
   const c = await db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
   if (!c) return null;
   const sub = computeSubscription(c);
+  const noSubscription = isNoSubscriptionCompanyName(c.nom);
   return {
     id: c.id, nom: c.nom, telephone: c.telephone, email: c.email,
     adresse: c.adresse, devise: c.devise, logo: c.logo, plan: c.plan,
+    no_subscription: noSubscription,
     ...sub,
+    ...(noSubscription ? {
+      illimite: false,
+      statut: 'actif',
+      essai_fin: null,
+      abonnement_fin: null,
+      demande_le: null,
+      en_essai: false,
+      jours_restants: null,
+      echeance: null,
+    } : {}),
   };
 }
 
@@ -109,11 +122,13 @@ router.post('/register', async (req, res) => {
     const exists = await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email);
     if (exists) return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée.' });
 
-    const essaiFin = addDaysYMD(TRIAL_DAYS);
+    const illimite = noSubscriptionValueForCompany(entreprise);
+    const statut = illimite ? 'actif' : 'essai';
+    const essaiFin = illimite ? null : addDaysYMD(TRIAL_DAYS);
     const companyId = (await db.prepare(
-      `INSERT INTO companies (nom, telephone, email, devise, plan, statut, essai_fin)
-       VALUES (?,?,?, 'FCFA', 'annuel', 'essai', ?)`
-    ).run(entreprise, telephone, email, essaiFin)).lastInsertRowid;
+      `INSERT INTO companies (nom, telephone, email, devise, plan, statut, essai_fin, illimite)
+       VALUES (?,?,?, 'FCFA', 'annuel', ?, ?, ?)`
+    ).run(entreprise, telephone, email, statut, essaiFin, illimite)).lastInsertRowid;
 
     const userId = (await db.prepare(
       "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'admin', ?)"

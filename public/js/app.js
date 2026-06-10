@@ -44,6 +44,7 @@ const SUPER_NAV = ['entreprises', 'plateforme', 'compte'];
 
 const routesFor = () => (store.isSuper ? SUPER_ROUTES : ROUTES);
 const blocked = () => !store.isSuper && store.company && !store.company.actif;
+const noSubscriptionAccount = () => !store.isSuper && store.company && store.company.no_subscription;
 
 // ---------- Navigation ---------------------------------------------------
 function buildNav() {
@@ -57,7 +58,7 @@ function buildNav() {
   NAV_ORDER.forEach((k) => nav.appendChild(navLink(k)));
   if (store.user.role === 'admin') {
     nav.appendChild(navSep('Administration'));
-    nav.appendChild(navLink('abonnement'));
+    if (!noSubscriptionAccount()) nav.appendChild(navLink('abonnement'));
     nav.appendChild(navLink('parametres'));
     nav.appendChild(navLink('journal'));
   }
@@ -68,9 +69,9 @@ function navSep(text) {
   d.textContent = text;
   return d;
 }
-// Libelle d'une route — pour un compte illimite, "Mon abonnement" devient "Mon compte".
+// Libelle d'une route — pour un compte illimite classique, "Mon abonnement" devient "Mon compte".
 function labelFor(key) {
-  if (key === 'abonnement' && store.company && store.company.illimite) return 'Mon compte';
+  if (key === 'abonnement' && store.company && store.company.illimite && !store.company.no_subscription) return 'Mon compte';
   return routesFor()[key].label;
 }
 function navLink(key) {
@@ -89,6 +90,9 @@ async function renderRoute() {
 
   // Entreprise bloquee : on force l'ecran d'abonnement.
   if (blocked()) key = 'abonnement';
+  // Compte interne sans abonnement : meme si l'URL est saisie a la main, on ne
+  // montre jamais l'ecran abonnement.
+  if (key === 'abonnement' && noSubscriptionAccount()) key = def;
   if (!routes[key]) key = def;
   if (routes[key].adminOnly && store.user.role !== 'admin') key = def;
 
@@ -112,6 +116,7 @@ function renderBanner() {
   let bar = document.getElementById('subBanner');
   if (bar) bar.remove();
   if (store.isSuper || !store.company) return;
+  if (noSubscriptionAccount()) return;
   const c = store.company;
   let html = '';
   if (c.statut_effectif === 'essai') {

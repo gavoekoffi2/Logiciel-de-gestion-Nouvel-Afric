@@ -1,4 +1,4 @@
-import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, fmt, pageHeader, codeCell } from '../core.js';
+import { api, icon, el, escapeHtml, formModal, confirmDialog, toast, badge, fmt, pageHeader } from '../core.js';
 
 const TYPES = ['RDC', 'R+1', 'R+2', 'R+3'];
 
@@ -32,25 +32,42 @@ export async function render() {
     if (statut) params.set('statut', statut);
     const rows = await api.get('/api/properties' + (params.toString() ? '?' + params : ''));
     listBox.innerHTML = '';
-    listBox.appendChild(dataTable({
-      columns: [
-        { label: 'Code', render: (r) => codeCell(r.code) },
-        { label: 'Propriétaire', render: (r) => escapeHtml(r.owner_nom || '—') },
-        { label: 'Type', render: (r) => escapeHtml(r.type_construction || '—') },
-        { label: 'Désignation', render: (r) => escapeHtml(r.designation || '—') },
-        { label: 'Loyer', num: true, render: (r) => fmt.money(r.cout_loyer) },
-        { label: 'Localisation', render: (r) => escapeHtml([r.commune, r.quartier].filter(Boolean).join(' · ') || r.ville || '—') },
-        { label: 'Commission', num: true, render: (r) => (r.part_commission || 0) + ' %' },
-        { label: 'Statut', render: (r) => badge(r.statut, r.statut === 'Occupé' ? 'amber' : 'green') },
-      ],
-      rows,
-      actions: [
-        { title: 'Entrer / suivi des locataires', icon: 'eye', variant: 'btn-ghost', onClick: (r) => { location.hash = '#/bien?id=' + r.id; } },
-        { title: 'Modifier', icon: 'edit', onClick: (r) => openForm(r) },
-        { title: 'Supprimer', icon: 'trash', onClick: (r) => remove(r) },
-      ],
-      empty: 'Aucun bien enregistré.',
-    }));
+    if (!rows.length) {
+      listBox.innerHTML = '<div class="card card-pad"><p class="muted" style="margin:0">Aucun bien enregistré.</p></div>';
+      return;
+    }
+
+    const grid = el('<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:14px"></div>');
+    rows.forEach((r) => {
+      const loc = [r.commune, r.quartier].filter(Boolean).join(' · ') || r.ville || '—';
+      const card = el(`
+        <div class="card card-pad" style="display:flex;flex-direction:column;gap:12px;border-left:4px solid ${r.statut === 'Occupé' ? '#f59e0b' : '#10b981'}">
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+            <div>
+              <div style="font-family:monospace;font-weight:800;color:#0f172a">${escapeHtml(r.code)}</div>
+              <h3 style="font-size:16px;margin:4px 0 2px;color:#0f172a">${escapeHtml(r.type_construction || 'Bien')}${r.designation ? ' — ' + escapeHtml(r.designation) : ''}</h3>
+              <div class="muted" style="font-size:13px">${escapeHtml(loc)}</div>
+            </div>
+            <div>${badge(r.statut, r.statut === 'Occupé' ? 'amber' : 'green')}</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+            <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Propriétaire</div><b>${escapeHtml(r.owner_nom || '—')}</b></div>
+            <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Loyer</div><b>${fmt.money(r.cout_loyer)}</b></div>
+            <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Portes / apparts</div><b>${fmt.int(r.nombre_porte || 0)}</b></div>
+            <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Commission</div><b>${fmt.int(r.part_commission || 0)} %</b></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:auto">
+            <button class="btn btn-primary btn-sm" data-enter>${icon('eye', 15)} Entrer dans le bien</button>
+            <button class="btn btn-ghost btn-sm" data-edit>${icon('edit', 15)} Modifier</button>
+            <button class="btn btn-danger btn-sm" data-del>${icon('trash', 15)}</button>
+          </div>
+        </div>`);
+      card.querySelector('[data-enter]').onclick = () => { location.hash = '#/bien?id=' + r.id; };
+      card.querySelector('[data-edit]').onclick = () => openForm(r);
+      card.querySelector('[data-del]').onclick = () => remove(r);
+      grid.appendChild(card);
+    });
+    listBox.appendChild(grid);
   }
 
   async function openForm(row) {

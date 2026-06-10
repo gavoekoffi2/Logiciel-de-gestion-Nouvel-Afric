@@ -14,6 +14,7 @@ const express = require('express');
 const {
   db, hashPassword, computeSubscription, todayYMD, addDaysYMD, addYearsYMD, TRIAL_DAYS,
 } = require('./db');
+const { isNoSubscriptionCompanyName, noSubscriptionValueForCompany } = require('./companyPolicy');
 
 const router = express.Router();
 
@@ -38,6 +39,7 @@ async function companyView(c) {
     admin_email: admin ? admin.email : null,
     admin_nom: admin ? admin.nom : null,
     nb_users: nbUsers, nb_biens: nbBiens,
+    no_subscription: isNoSubscriptionCompanyName(c.nom),
     ...computeSubscription(c),
   };
 }
@@ -84,7 +86,8 @@ router.post('/companies', wrap(async (req, res) => {
   const email = clean(b.email).toLowerCase();
   const telephone = clean(b.telephone);
   const password = clean(b.password);
-  const statut = ['actif', 'essai', 'suspendu'].includes(b.statut) ? b.statut : 'essai';
+  const illimite = noSubscriptionValueForCompany(entreprise);
+  const statut = illimite ? 'actif' : (['actif', 'essai', 'suspendu'].includes(b.statut) ? b.statut : 'essai');
 
   if (!entreprise) return res.status(400).json({ error: 'Nom de l’entreprise requis.' });
   if (!nom) return res.status(400).json({ error: 'Nom de l’administrateur requis.' });
@@ -94,12 +97,12 @@ router.post('/companies', wrap(async (req, res) => {
     return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée.' });
   }
 
-  const essaiFin = addDaysYMD(TRIAL_DAYS);
-  const abonnementFin = statut === 'actif' ? addYearsYMD(1) : null;
+  const essaiFin = illimite ? null : addDaysYMD(TRIAL_DAYS);
+  const abonnementFin = (!illimite && statut === 'actif') ? addYearsYMD(1) : null;
   const companyId = (await db.prepare(
-    `INSERT INTO companies (nom, telephone, email, devise, plan, statut, essai_fin, abonnement_fin)
-     VALUES (?,?,?, 'FCFA', 'annuel', ?, ?, ?)`
-  ).run(entreprise, telephone, email, statut, essaiFin, abonnementFin)).lastInsertRowid;
+    `INSERT INTO companies (nom, telephone, email, devise, plan, statut, essai_fin, abonnement_fin, illimite)
+     VALUES (?,?,?, 'FCFA', 'annuel', ?, ?, ?, ?)`
+  ).run(entreprise, telephone, email, statut, essaiFin, abonnementFin, illimite)).lastInsertRowid;
 
   await db.prepare(
     "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'admin', ?)"
@@ -115,10 +118,13 @@ router.put('/companies/:id', wrap(async (req, res) => {
   const c = await db.prepare('SELECT * FROM companies WHERE id = ?').get(id);
   if (!c) return res.status(404).json({ error: 'Entreprise introuvable.' });
   const b = req.body || {};
-  await db.prepare(
-    'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=? WHERE id=?'
-  ).run(
-    clean(b.entreprise) || c.nom,
+  const nextName = clean(b.entreprise) || c.nom;
+  const forceNoSubscription = isNoSubscriptionCompanyName(nextName);
+  const sql = forceNoSubscription
+    ? 'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=?, illimite=1, statut=\'actif\', demande_le=NULL WHERE id=?'
+    : 'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=? WHERE id=?';
+  await db.prepare(sql).run(
+    nextName,
     clean(b.telephone),
     clean(b.email),
     clean(b.adresse),

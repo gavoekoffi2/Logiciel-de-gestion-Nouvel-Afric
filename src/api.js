@@ -16,6 +16,7 @@
 const express = require('express');
 const { db, hashPassword, computeSubscription } = require('./db');
 const { requireRole, publicUser, companyState } = require('./auth');
+const { isNoSubscriptionCompanyName } = require('./companyPolicy');
 
 const router = express.Router();
 const settingsRouter = express.Router();
@@ -259,6 +260,7 @@ router.delete('/tenants/:id', wrap(async (req, res) => {
 // ===========================================================================
 const PROPERTY_SELECT = `
   SELECT p.*, o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
+         o.email AS owner_email, o.adresse AS owner_adresse,
          CASE WHEN EXISTS (
            SELECT 1 FROM subscriptions s
            WHERE s.property_id = p.id AND s.statut = 'Active'
@@ -490,7 +492,28 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
   const property = await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ? AND p.company_id = ?`).get(id, cid);
   if (!property) return res.status(404).json({ error: 'Bien introuvable.' });
 
-  const subs = await db.prepare(`${SUB_SELECT} WHERE s.property_id = ? AND s.company_id = ? ORDER BY s.statut, s.id DESC`).all(id, cid);
+  const [subs, repairs, allPayments, payoutRows] = await Promise.all([
+    db.prepare(`${SUB_SELECT} WHERE s.property_id = ? AND s.company_id = ? ORDER BY s.statut, s.id DESC`).all(id, cid),
+    db.prepare('SELECT * FROM repairs WHERE property_id = ? AND company_id = ? ORDER BY annee DESC, id DESC').all(id, cid),
+    db.prepare(
+      `SELECT r.id, r.code, r.date, r.mois_concerne, r.annee_concernee,
+              r.montant_a_payer, r.montant_paye, r.reste_a_payer, r.statut, r.numero_recu,
+              r.payout_id, s.code AS subscription_code, t.nom_prenoms AS tenant_nom,
+              t.contact AS tenant_contact
+       FROM payments r
+       LEFT JOIN subscriptions s ON s.id = r.subscription_id
+       LEFT JOIN tenants t ON t.id = r.tenant_id
+       WHERE r.property_id = ? AND r.company_id = ?
+       ORDER BY r.annee_concernee DESC, r.id DESC`
+    ).all(id, cid),
+    db.prepare(
+      `SELECT DISTINCT v.*
+       FROM payouts v
+       JOIN payments r ON r.payout_id = v.id
+       WHERE r.property_id = ? AND r.company_id = ? AND v.company_id = ?
+       ORDER BY v.id DESC`
+    ).all(id, cid, cid),
+  ]);
 
   for (const s of subs) {
     const pays = await db.prepare(
@@ -525,7 +548,33 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     s.resume = { nb_paiements: pays.length, total_attendu, total_paye, reste, mois_retard };
   }
 
-  res.json({ property, subscriptions: subs });
+  const payoutLineRows = await db.prepare(
+    `SELECT r.payout_id, r.id, r.code, r.date, r.mois_concerne, r.annee_concernee, r.montant_paye,
+            p.part_commission, t.nom_prenoms AS tenant_nom
+     FROM payments r
+     LEFT JOIN properties p ON p.id = r.property_id
+     LEFT JOIN tenants t ON t.id = r.tenant_id
+     WHERE r.property_id = ? AND r.company_id = ? AND r.payout_id IS NOT NULL
+     ORDER BY r.annee_concernee, r.id`
+  ).all(id, cid);
+  const linesByPayout = payoutLineRows.reduce((acc, l) => {
+    l.commission = Math.round((l.montant_paye * (l.part_commission || 0)) / 100);
+    l.net = l.montant_paye - l.commission;
+    (acc[l.payout_id] ||= []).push(l);
+    return acc;
+  }, {});
+  const payouts = payoutRows.map((v) => ({ ...v, lignes_bien: linesByPayout[v.id] || [] }));
+
+  const totals = {
+    total_paye: allPayments.reduce((a, p) => a + (p.montant_paye || 0), 0),
+    total_reste: allPayments.reduce((a, p) => a + (p.reste_a_payer || 0), 0),
+    total_reparations: repairs.reduce((a, r) => a + (r.montant || 0), 0),
+    total_reversements_net: payouts.reduce((a, v) => a + (v.lignes_bien || []).reduce((b, l) => b + (l.net || 0), 0), 0),
+    nombre_locataires: subs.length,
+    nombre_locataires_actifs: subs.filter((s) => s.statut === 'Active').length,
+  };
+
+  res.json({ property, subscriptions: subs, repairs, payments: allPayments, payouts, totals });
 }));
 
 // ===========================================================================
@@ -1148,10 +1197,13 @@ settingsRouter.put('/', requireRole('admin'), wrap(async (req, res) => {
     }
   }
 
-  await db.prepare(
-    'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=?, logo=? WHERE id=?'
-  ).run(
-    clean(b.entreprise) || 'Mon entreprise',
+  const nextName = clean(b.entreprise) || 'Mon entreprise';
+  const forceNoSubscription = isNoSubscriptionCompanyName(nextName);
+  const sql = forceNoSubscription
+    ? 'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=?, logo=?, illimite=1, statut=\'actif\', demande_le=NULL WHERE id=?'
+    : 'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=?, logo=? WHERE id=?';
+  await db.prepare(sql).run(
+    nextName,
     clean(b.telephone),
     clean(b.email),
     clean(b.adresse),

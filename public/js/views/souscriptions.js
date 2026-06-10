@@ -1,5 +1,41 @@
 import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, fmt, pageHeader, printDocument, docHeader, codeCell, store } from '../core.js';
 
+const FEE_LABELS = ['Gardiennage', 'Entretien', 'Eau', 'WC', 'Ordures', 'Nettoyage', 'Sécurité'];
+function parseFees(raw) {
+  if (!raw) return [];
+  try { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr; } catch (_) { /* ancien format */ }
+  return raw ? [{ libelle: String(raw), montant: 0 }] : [];
+}
+function feesToFormValues(row) {
+  const out = { ...(row || {}) };
+  parseFees(row && row.autre_frais).forEach((f) => {
+    if (FEE_LABELS.includes(f.libelle)) out[`fee_${f.libelle}`] = f.montant || 0;
+    else { out.fee_autre_label = f.libelle || ''; out.fee_autre_montant = f.montant || 0; }
+  });
+  return out;
+}
+function collectFees(v) {
+  const fees = [];
+  FEE_LABELS.forEach((label) => {
+    const montant = Number(v[`fee_${label}`]) || 0;
+    if (montant > 0) fees.push({ libelle: label, montant });
+  });
+  const otherLabel = String(v.fee_autre_label || '').trim();
+  const otherAmount = Number(v.fee_autre_montant) || 0;
+  if (otherLabel && otherAmount > 0) fees.push({ libelle: otherLabel, montant: otherAmount });
+  return fees;
+}
+function feesPayload(v) {
+  const fees = collectFees(v);
+  return { autre_frais: fees.length ? JSON.stringify(fees) : '', montant_autre_frais: fees.reduce((a, f) => a + f.montant, 0) };
+}
+function feesTotal(v) { return collectFees(v).reduce((a, f) => a + f.montant, 0); }
+function displayFees(raw) {
+  const fees = parseFees(raw);
+  if (!fees.length) return '—';
+  return fees.map((f) => `${escapeHtml(f.libelle)}${f.montant ? ': ' + fmt.money(f.montant) : ''}`).join('<br>');
+}
+
 export async function render() {
   let q = '';
   const root = el(`
@@ -49,6 +85,11 @@ export async function render() {
     if (tenants.length === 0) { toast('Veuillez d’abord enregistrer un locataire.', 'error'); return; }
     const propMap = Object.fromEntries(props.map((p) => [String(p.id), p]));
 
+    const defaults = {
+      date_souscription: fmt.today(), date_entree: fmt.today(), date_debut_paiement: fmt.today(),
+      nombre_mois_caution: 2, nombre_mois_avance: 2, nombre_mois_garantie: 0, montant_autre_frais: 0, statut: 'Active',
+    };
+    const values = row ? feesToFormValues(row) : defaults;
     formModal({
       title: row ? 'Modifier la souscription' : 'Nouvelle souscription',
       size: 'lg',
@@ -65,16 +106,16 @@ export async function render() {
         { name: 'montant_avance', label: 'Montant avance', type: 'number', readonly: true },
         { name: 'nombre_mois_garantie', label: 'Nombre de mois de garantie', type: 'number', min: 0 },
         { name: 'montant_garantie', label: 'Montant garantie', type: 'number', readonly: true },
-        { name: 'autre_frais', label: 'Autres frais', type: 'select', options: ['WC', 'Eau', 'Gardiennage', 'Entretien', 'Ordures'] },
-        { name: 'montant_autre_frais', label: 'Montant autres frais', type: 'number', min: 0 },
+        ...FEE_LABELS.map((label) => ({ name: `fee_${label}`, label: `${label} — montant`, type: 'number', min: 0, step: 500 })),
+        { name: 'fee_autre_label', label: 'Autre frais — libellé' },
+        { name: 'fee_autre_montant', label: 'Autre frais — montant', type: 'number', min: 0, step: 500 },
+        { name: 'montant_autre_frais', label: 'Total autres frais', type: 'number', readonly: true },
+        { name: 'autre_frais', label: 'Autres frais JSON', type: 'hidden' },
         { name: 'date_entree', label: 'Date d’entrée', type: 'date', required: true },
         { name: 'date_debut_paiement', label: 'Date début de paiement', type: 'date', required: true },
         { name: 'statut', label: 'Statut', type: 'select', options: ['Active', 'Desactive'] },
       ],
-      values: row || {
-        date_souscription: fmt.today(), date_entree: fmt.today(), date_debut_paiement: fmt.today(),
-        nombre_mois_caution: 2, nombre_mois_avance: 2, nombre_mois_garantie: 0, montant_autre_frais: 0, statut: 'Active',
-      },
+      values,
       onChange: (v, changed, set) => {
         if (changed === 'property_id') {
           const p = propMap[String(v.property_id)];
@@ -84,9 +125,11 @@ export async function render() {
         set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
         set('montant_avance', (Number(v.nombre_mois_avance) || 0) * loyer);
         set('montant_garantie', (Number(v.nombre_mois_garantie) || 0) * loyer);
+        set('montant_autre_frais', feesTotal(v));
       },
       onSubmit: async (v) => {
-        const saved = row ? await api.put('/api/subscriptions/' + row.id, v) : await api.post('/api/subscriptions', v);
+        const payload = { ...v, ...feesPayload(v) };
+        const saved = row ? await api.put('/api/subscriptions/' + row.id, payload) : await api.post('/api/subscriptions', payload);
         toast(row ? 'Souscription modifiée.' : 'Souscription enregistrée.');
         load();
         if (!row && saved && saved.id) {
@@ -145,7 +188,7 @@ export async function printFiche(id) {
       ${row('Montant avance', fmt.money(s.montant_avance))}
       ${row('Nombre de mois de garantie', s.nombre_mois_garantie ?? 0)}
       ${row('Montant garantie', fmt.money(s.montant_garantie))}
-      ${row('Autres frais', escapeHtml(s.autre_frais || '—'))}
+      ${row('Autres frais', displayFees(s.autre_frais))}
       ${row('Montant autres frais', fmt.money(s.montant_autre_frais))}
       <tr class="montant-fort"><td class="k"><b>Montant total payé par le locataire</b></td><td class="v">${fmt.money(total)}</td></tr>
     </table>

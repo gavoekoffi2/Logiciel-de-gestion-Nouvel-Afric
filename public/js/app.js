@@ -24,6 +24,7 @@ const ROUTES = {
   maisons:       { label: 'Maisons / Biens', icon: 'houses',        mod: maisons },
   bien:          { label: 'Détail du bien',  icon: 'houses',        mod: maisonDetail },
   locataires:    { label: 'Locataires',      icon: 'tenants',       mod: locataires },
+  locataire:     { label: 'Détail du locataire', icon: 'tenants',    mod: { render: locataires.renderDetail } },
   souscriptions: { label: 'Souscriptions',   icon: 'subscriptions', mod: souscriptions },
   reglements:    { label: 'Règlements',      icon: 'payments',      mod: reglements },
   recouvrement:  { label: 'Recouvrement',    icon: 'collect',       mod: recouvrement },

@@ -208,16 +208,24 @@ router.delete('/owners/:id', wrap(async (req, res) => {
 router.get('/tenants', wrap(async (req, res) => {
   const cid = req.companyId;
   const q = clean(req.query.q);
+  const base = `SELECT t.*,
+      s.id AS active_subscription_id, s.code AS active_subscription_code,
+      p.id AS active_property_id, p.code AS active_property_code,
+      p.designation AS active_property_designation, p.type_construction AS active_property_type,
+      p.cout_loyer AS active_property_loyer
+    FROM tenants t
+    LEFT JOIN subscriptions s ON s.tenant_id = t.id AND s.company_id = t.company_id AND s.statut = 'Active'
+    LEFT JOIN properties p ON p.id = s.property_id`;
   let rows;
   if (q) {
     const like = `%${q}%`;
     rows = await db.prepare(
-      `SELECT * FROM tenants
-       WHERE company_id = ? AND (nom_prenoms LIKE ? OR contact LIKE ? OR email LIKE ? OR adresse LIKE ?)
-       ORDER BY nom_prenoms COLLATE NOCASE`
-    ).all(cid, like, like, like, like);
+      `${base}
+       WHERE t.company_id = ? AND (t.nom_prenoms LIKE ? OR t.contact LIKE ? OR t.email LIKE ? OR t.adresse LIKE ? OR p.code LIKE ?)
+       ORDER BY t.nom_prenoms COLLATE NOCASE`
+    ).all(cid, like, like, like, like, like);
   } else {
-    rows = await db.prepare('SELECT * FROM tenants WHERE company_id = ? ORDER BY nom_prenoms COLLATE NOCASE').all(cid);
+    rows = await db.prepare(`${base} WHERE t.company_id = ? ORDER BY t.nom_prenoms COLLATE NOCASE`).all(cid);
   }
   res.json(rows);
 }));
@@ -231,7 +239,72 @@ router.post('/tenants', wrap(async (req, res) => {
     'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution) VALUES (?,?,?,?,?,?)'
   ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution));
   await logAction(req, 'Création', 'Locataire', p.nom_prenoms);
-  res.json(await db.prepare('SELECT * FROM tenants WHERE id = ?').get(info.lastInsertRowid));
+  const tenantId = info.lastInsertRowid;
+
+  // Si un bien est choisi au moment d'enregistrer le locataire, on cree aussi
+  // la souscription (le bail) qui relie ce locataire a ce bien.
+  const propertyId = toInt(req.body.property_id);
+  if (propertyId) {
+    const prop = await db.prepare('SELECT * FROM properties WHERE id = ? AND company_id = ?').get(propertyId, cid);
+    if (!prop) return res.status(400).json({ error: 'Bien introuvable.' });
+    const montantLoyer = toInt(req.body.montant_loyer) || toInt(prop.cout_loyer);
+    const nbCaution = toInt(req.body.nombre_mois_caution);
+    const nbAvance = toInt(req.body.nombre_mois_avance);
+    const nbGarantie = toInt(req.body.nombre_mois_garantie);
+    const today = new Date().toISOString().slice(0, 10);
+    const s = subscriptionPayload({
+      ...req.body,
+      property_id: propertyId,
+      tenant_id: tenantId,
+      montant_loyer: montantLoyer,
+      montant_caution: req.body.montant_caution !== undefined ? req.body.montant_caution : nbCaution * montantLoyer,
+      montant_avance: req.body.montant_avance !== undefined ? req.body.montant_avance : nbAvance * montantLoyer,
+      montant_garantie: req.body.montant_garantie !== undefined ? req.body.montant_garantie : nbGarantie * montantLoyer,
+      date_souscription: clean(req.body.date_souscription) || today,
+      date_entree: clean(req.body.date_entree) || today,
+      date_debut_paiement: clean(req.body.date_debut_paiement) || clean(req.body.date_entree) || today,
+      statut: clean(req.body.statut) || 'Active',
+    });
+    const subErr = await validateSubscription(s, cid);
+    if (subErr) return res.status(400).json({ error: subErr });
+    const code = await genCode('subscriptions', 'S', s.date_souscription);
+    await db.prepare(
+      `INSERT INTO subscriptions
+       (company_id, code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution,
+        montant_caution, nombre_mois_avance, montant_avance, nombre_mois_garantie, montant_garantie,
+        autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
+       VALUES (@company_id,@code,@property_id,@tenant_id,@date_souscription,@montant_loyer,@nombre_mois_caution,
+        @montant_caution,@nombre_mois_avance,@montant_avance,@nombre_mois_garantie,@montant_garantie,
+        @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@statut)`
+    ).run({ company_id: cid, code, ...s });
+    await logAction(req, 'Création', 'Souscription', `${code} — ${p.nom_prenoms}`);
+  }
+
+  res.json(await db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId));
+}));
+
+router.get('/tenants/:id/details', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const id = toInt(req.params.id);
+  const tenant = await db.prepare('SELECT * FROM tenants WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!tenant) return res.status(404).json({ error: 'Locataire introuvable.' });
+  const subscriptions = await db.prepare(`${SUB_SELECT} WHERE s.tenant_id = ? AND s.company_id = ? ORDER BY s.statut, s.id DESC`).all(id, cid);
+  const payments = await db.prepare(
+    `SELECT r.*, p.code AS property_code, p.designation, p.type_construction
+     FROM payments r
+     LEFT JOIN properties p ON p.id = r.property_id
+     WHERE r.tenant_id = ? AND r.company_id = ?
+     ORDER BY r.annee_concernee DESC, r.id DESC`
+  ).all(id, cid);
+  const totals = {
+    loyers_payes: payments.reduce((a, x) => a + (x.montant_paye || 0), 0),
+    reste_a_payer: payments.reduce((a, x) => a + (x.reste_a_payer || 0), 0),
+    cautions: subscriptions.reduce((a, s) => a + (s.montant_caution || 0), 0),
+    avances: subscriptions.reduce((a, s) => a + (s.montant_avance || 0), 0),
+    garanties: subscriptions.reduce((a, s) => a + (s.montant_garantie || 0), 0),
+    autres_frais: subscriptions.reduce((a, s) => a + (s.montant_autre_frais || 0), 0),
+  };
+  res.json({ tenant, subscriptions, payments, totals });
 }));
 
 router.put('/tenants/:id', wrap(async (req, res) => {

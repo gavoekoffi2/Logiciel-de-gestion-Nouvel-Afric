@@ -23,6 +23,15 @@ function sectionTitle(title, subtitle = '') {
   </div>`;
 }
 
+function displayFees(raw) {
+  if (!raw) return '—';
+  try {
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr)) return arr.map((f) => `${escapeHtml(f.libelle)}: ${fmt.money(f.montant)}`).join(' · ');
+  } catch (_) { /* ancien format texte */ }
+  return escapeHtml(raw);
+}
+
 // Premier mois encore impaye (pour pre-remplir l'encaissement).
 function nextUnpaid(s) {
   return (s.echeancier || []).find((m) => m.reste > 0) || null;
@@ -140,7 +149,7 @@ export async function render() {
           ${miniStat('Total payé', fmt.money(r.total_paye))}
           ${miniStat('Reste dû', fmt.money(r.reste), r.reste > 0)}
         </div>
-        ${s.autre_frais || s.montant_autre_frais ? `<div class="muted" style="font-size:13px;margin-bottom:10px">Autres frais : ${escapeHtml(s.autre_frais || '—')} — ${fmt.money(s.montant_autre_frais)}</div>` : ''}
+        ${s.autre_frais || s.montant_autre_frais ? `<div class="muted" style="font-size:13px;margin-bottom:10px">Autres frais : ${displayFees(s.autre_frais)} — total ${fmt.money(s.montant_autre_frais)}</div>` : ''}
       </div>`);
     card.appendChild(head);
 

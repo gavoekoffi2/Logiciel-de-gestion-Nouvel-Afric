@@ -230,14 +230,22 @@ router.get('/tenants', wrap(async (req, res) => {
   res.json(rows);
 }));
 
+router.get('/tenants/:id/defaults', wrap(async (req, res) => {
+  const row = await db.prepare(
+    'SELECT id, caution, autre_frais, montant_autre_frais FROM tenants WHERE id = ? AND company_id = ?'
+  ).get(toInt(req.params.id), req.companyId);
+  if (!row) return res.status(404).json({ error: 'Locataire introuvable.' });
+  res.json(row);
+}));
+
 router.post('/tenants', wrap(async (req, res) => {
   const cid = req.companyId;
   const p = personPayload(req.body);
   const err = await validatePerson(p, 'tenants', cid, 0, 'locataire');
   if (err) return res.status(400).json({ error: err });
   const info = await db.prepare(
-    'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution) VALUES (?,?,?,?,?,?)'
-  ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution));
+    'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution, autre_frais, montant_autre_frais) VALUES (?,?,?,?,?,?,?,?)'
+  ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), clean(req.body.autre_frais), toInt(req.body.montant_autre_frais));
   await logAction(req, 'Création', 'Locataire', p.nom_prenoms);
   const tenantId = info.lastInsertRowid;
 
@@ -314,8 +322,8 @@ router.put('/tenants/:id', wrap(async (req, res) => {
   const err = await validatePerson(p, 'tenants', cid, id, 'locataire');
   if (err) return res.status(400).json({ error: err });
   await db.prepare(
-    'UPDATE tenants SET nom_prenoms=?, contact=?, email=?, adresse=?, caution=? WHERE id=? AND company_id=?'
-  ).run(p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), id, cid);
+    'UPDATE tenants SET nom_prenoms=?, contact=?, email=?, adresse=?, caution=?, autre_frais=?, montant_autre_frais=? WHERE id=? AND company_id=?'
+  ).run(p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), clean(req.body.autre_frais), toInt(req.body.montant_autre_frais), id, cid);
   await logAction(req, 'Modification', 'Locataire', p.nom_prenoms);
   res.json(await db.prepare('SELECT * FROM tenants WHERE id = ? AND company_id = ?').get(id, cid));
 }));

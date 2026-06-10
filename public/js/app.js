@@ -7,6 +7,7 @@ import * as dashboard from './views/dashboard.js';
 import * as proprietaires from './views/proprietaires.js';
 import * as maisons from './views/maisons.js';
 import * as maisonDetail from './views/maisonDetail.js';
+import * as quartiers from './views/quartiers.js';
 import * as locataires from './views/locataires.js';
 import * as souscriptions from './views/souscriptions.js';
 import * as reglements from './views/reglements.js';
@@ -23,6 +24,7 @@ const ROUTES = {
   proprietaires: { label: 'Propriétaires',   icon: 'owners',        mod: proprietaires },
   maisons:       { label: 'Maisons / Biens', icon: 'houses',        mod: maisons },
   bien:          { label: 'Détail du bien',  icon: 'houses',        mod: maisonDetail },
+  quartiers:     { label: 'Quartiers',       icon: 'houses',        mod: quartiers },
   locataires:    { label: 'Locataires',      icon: 'tenants',       mod: locataires },
   locataire:     { label: 'Détail du locataire', icon: 'tenants',    mod: { render: locataires.renderDetail } },
   souscriptions: { label: 'Souscriptions',   icon: 'subscriptions', mod: souscriptions },
@@ -33,7 +35,7 @@ const ROUTES = {
   parametres:    { label: 'Paramètres',      icon: 'settings',      mod: parametres, adminOnly: true },
   journal:       { label: 'Journal d’activité', icon: 'clock',      mod: journal, adminOnly: true },
 };
-const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'locataires', 'souscriptions', 'reglements', 'recouvrement', 'reversements'];
+const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'quartiers', 'locataires', 'souscriptions', 'reglements', 'recouvrement', 'reversements'];
 
 // Routes du super-administrateur.
 const SUPER_ROUTES = {

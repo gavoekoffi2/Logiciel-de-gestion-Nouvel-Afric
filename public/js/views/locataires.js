@@ -23,6 +23,19 @@ function collectFees(v) {
   if (otherLabel && otherAmount > 0) fees.push({ libelle: otherLabel, montant: otherAmount });
   return fees;
 }
+function parseFees(raw) {
+  if (!raw) return [];
+  try { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr; } catch (_) { /* ancien format */ }
+  return raw ? [{ libelle: String(raw), montant: 0 }] : [];
+}
+function feesToFormValues(row) {
+  const out = { ...(row || {}) };
+  parseFees(row && row.autre_frais).forEach((f) => {
+    if (FEE_LABELS.includes(f.libelle)) out[`fee_${f.libelle}`] = f.montant || 0;
+    else { out.fee_autre_label = f.libelle || ''; out.fee_autre_montant = f.montant || 0; }
+  });
+  return out;
+}
 function feesTotal(v) { return collectFees(v).reduce((a, f) => a + f.montant, 0); }
 function serializeFees(v) {
   const fees = collectFees(v);
@@ -30,10 +43,8 @@ function serializeFees(v) {
 }
 function displayFees(raw) {
   if (!raw) return '—';
-  try {
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return arr.map((f) => `${escapeHtml(f.libelle)}: ${fmt.money(f.montant)}`).join('<br>');
-  } catch (_) { /* ancien format texte */ }
+  const arr = parseFees(raw);
+  if (arr.length) return arr.map((f) => `${escapeHtml(f.libelle)}${f.montant ? ': ' + fmt.money(f.montant) : ''}`).join('<br>');
   return escapeHtml(raw);
 }
 function miniStat(label, value, danger) {
@@ -67,6 +78,7 @@ export async function render() {
         { label: 'Contact', render: (r) => escapeHtml(r.contact || '—') },
         { label: 'Bien actuel', render: (r) => r.active_property_code ? `${codeCell(r.active_property_code)}<br><span class="muted">${escapeHtml(r.active_property_type || '')}${r.active_property_designation ? ' — ' + escapeHtml(r.active_property_designation) : ''}</span>` : '<span class="muted">Aucun bien actif</span>' },
         { label: 'Loyer', num: true, render: (r) => r.active_property_loyer ? fmt.money(r.active_property_loyer) : '—' },
+        { label: 'Frais prévus', render: (r) => displayFees(r.autre_frais) },
         { label: 'Caution', num: true, render: (r) => fmt.money(r.caution || 0) },
       ],
       rows,
@@ -88,6 +100,7 @@ export async function render() {
       { name: 'email', label: 'Email' },
       { name: 'adresse', label: 'Adresse', type: 'textarea' },
       { name: 'caution', label: 'Caution enregistrée sur la fiche locataire', type: 'number', min: 0, step: 1000 },
+      ...feeFields(),
     ];
     if (!row) {
       fields.push(
@@ -101,22 +114,22 @@ export async function render() {
         { name: 'montant_avance', label: 'Montant avance', type: 'number', readonly: true },
         { name: 'nombre_mois_garantie', label: 'Nombre de mois de garantie', type: 'number', min: 0 },
         { name: 'montant_garantie', label: 'Montant garantie', type: 'number', readonly: true },
-        ...feeFields(),
         { name: 'date_entree', label: 'Date d’entrée', type: 'date', required: true },
         { name: 'date_debut_paiement', label: 'Date début de paiement', type: 'date', required: true },
         { name: 'statut', label: 'Statut du bail', type: 'select', options: ['Active', 'Desactive'] },
       );
       if (props.length === 0) { toast('Aucun bien disponible. Ajoutez ou libérez un bien avant de créer un locataire lié.', 'error'); return; }
     }
+    const initial = row ? feesToFormValues(row) : {
+      date_souscription: fmt.today(), date_entree: fmt.today(), date_debut_paiement: fmt.today(),
+      nombre_mois_caution: 2, nombre_mois_avance: 2, nombre_mois_garantie: 0,
+      montant_autre_frais: 0, statut: 'Active',
+    };
     formModal({
       title: row ? 'Modifier le locataire' : 'Nouveau locataire + bien occupé',
       size: 'lg',
       fields,
-      values: row || {
-        date_souscription: fmt.today(), date_entree: fmt.today(), date_debut_paiement: fmt.today(),
-        nombre_mois_caution: 2, nombre_mois_avance: 2, nombre_mois_garantie: 0,
-        montant_autre_frais: 0, statut: 'Active',
-      },
+      values: initial,
       onChange: (v, changed, set) => {
         if (!row && changed === 'property_id') {
           const p = propMap[String(v.property_id)];
@@ -127,12 +140,13 @@ export async function render() {
           set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
           set('montant_avance', (Number(v.nombre_mois_avance) || 0) * loyer);
           set('montant_garantie', (Number(v.nombre_mois_garantie) || 0) * loyer);
-          set('montant_autre_frais', feesTotal(v));
         }
+        set('montant_autre_frais', feesTotal(v));
       },
       onSubmit: async (v) => {
-        if (row) await api.put('/api/tenants/' + row.id, v);
-        else await api.post('/api/tenants', { ...v, ...serializeFees(v) });
+        const payload = { ...v, ...serializeFees(v) };
+        if (row) await api.put('/api/tenants/' + row.id, payload);
+        else await api.post('/api/tenants', payload);
         toast(row ? 'Locataire modifié.' : 'Locataire ajouté et rattaché au bien.');
         load();
       },

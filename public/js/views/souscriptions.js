@@ -35,6 +35,19 @@ function displayFees(raw) {
   if (!fees.length) return '—';
   return fees.map((f) => `${escapeHtml(f.libelle)}${f.montant ? ': ' + fmt.money(f.montant) : ''}`).join('<br>');
 }
+function applyTenantFees(tenant, set) {
+  const fees = parseFees(tenant && tenant.autre_frais);
+  FEE_LABELS.forEach((label) => set(`fee_${label}`, 0));
+  set('fee_autre_label', '');
+  set('fee_autre_montant', 0);
+  fees.forEach((f) => {
+    if (FEE_LABELS.includes(f.libelle)) set(`fee_${f.libelle}`, f.montant || 0);
+    else { set('fee_autre_label', f.libelle || ''); set('fee_autre_montant', f.montant || 0); }
+  });
+  const total = fees.reduce((a, f) => a + (Number(f.montant) || 0), 0);
+  set('montant_autre_frais', total);
+  set('autre_frais', fees.length ? JSON.stringify(fees) : '');
+}
 
 export async function render() {
   let q = '';
@@ -84,6 +97,7 @@ export async function render() {
     if (props.length === 0) { toast('Aucun bien disponible. Ajoutez un bien ou libérez-en un.', 'error'); return; }
     if (tenants.length === 0) { toast('Veuillez d’abord enregistrer un locataire.', 'error'); return; }
     const propMap = Object.fromEntries(props.map((p) => [String(p.id), p]));
+    const tenantMap = Object.fromEntries(tenants.map((t) => [String(t.id), t]));
 
     const defaults = {
       date_souscription: fmt.today(), date_entree: fmt.today(), date_debut_paiement: fmt.today(),
@@ -120,6 +134,9 @@ export async function render() {
         if (changed === 'property_id') {
           const p = propMap[String(v.property_id)];
           if (p) { set('montant_loyer', p.cout_loyer); v.montant_loyer = p.cout_loyer; }
+        }
+        if (changed === 'tenant_id') {
+          applyTenantFees(tenantMap[String(v.tenant_id)], set);
         }
         const loyer = Number(v.montant_loyer) || 0;
         set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);

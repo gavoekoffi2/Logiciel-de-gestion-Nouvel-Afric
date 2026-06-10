@@ -157,6 +157,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   email       TEXT,
   adresse     TEXT,
   caution     INTEGER NOT NULL DEFAULT 0,
+  autre_frais TEXT,
+  montant_autre_frais INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -306,6 +308,8 @@ const MIGRATIONS = [
   "ALTER TABLE owners ADD COLUMN type_logement TEXT",
   "ALTER TABLE owners ADD COLUMN pieces_logement TEXT",
   "ALTER TABLE tenants ADD COLUMN caution INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE tenants ADD COLUMN autre_frais TEXT",
+  "ALTER TABLE tenants ADD COLUMN montant_autre_frais INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE properties ADD COLUMN designation TEXT",
   "ALTER TABLE subscriptions ADD COLUMN nombre_mois_garantie INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE subscriptions ADD COLUMN montant_garantie INTEGER NOT NULL DEFAULT 0",

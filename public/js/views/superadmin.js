@@ -59,6 +59,7 @@ async function renderCompanies() {
     if (row.statut_effectif === 'suspendu') mk('Réactiver', 'btn-ghost', () => simpleAction(row, 'reactiver', 'Entreprise réactivée.'));
     else mk('Suspendre', 'btn-ghost', () => suspendre(row));
     const edit = el(`<button class="btn btn-icon btn-sm btn-ghost" title="Modifier">${icon('edit', 15)}</button>`); edit.onclick = () => openEdit(row); box.appendChild(edit);
+    const pwd = el(`<button class="btn btn-icon btn-sm btn-ghost" title="Changer le mot de passe administrateur">🔑</button>`); pwd.onclick = () => resetPassword(row); box.appendChild(pwd);
     const del = el(`<button class="btn btn-icon btn-sm btn-ghost" title="Supprimer">${icon('trash', 15)}</button>`); del.onclick = () => remove(row); box.appendChild(del);
     return box;
   }
@@ -115,6 +116,20 @@ async function renderCompanies() {
     catch (e) { toast(e.message, 'error'); }
   }
 
+  // Le super-admin change le mot de passe administrateur d'une entreprise.
+  function resetPassword(row) {
+    formModal({
+      title: `Mot de passe — ${row.nom}`,
+      fields: [{ name: 'password', label: 'Nouveau mot de passe administrateur', required: true, hint: '6 caractères minimum — affiché pour que vous puissiez le communiquer.' }],
+      onSubmit: async (v) => {
+        try {
+          await api.post(`/api/platform/companies/${row.id}/admin-password`, { password: v.password });
+          toast('Mot de passe de l’entreprise mis à jour.');
+        } catch (e) { toast(e.message, 'error'); }
+      },
+    });
+  }
+
   function openCreate() {
     formModal({
       title: 'Nouvelle entreprise',
@@ -126,7 +141,9 @@ async function renderCompanies() {
         { name: 'email', label: 'E-mail (connexion admin)', required: true },
         { name: 'password', label: 'Mot de passe', required: true, hint: '6 caractères minimum.' },
         { name: 'statut', label: 'État de départ', type: 'select', options: [
-          { value: 'essai', label: 'Essai gratuit' }, { value: 'actif', label: 'Actif (1 an)' }] },
+          { value: 'essai', label: 'Essai gratuit (14 jours)' },
+          { value: 'actif', label: 'Actif (1 an)' },
+          { value: 'illimite', label: 'Illimité (à vie) — sans abonnement' }] },
       ],
       values: { statut: 'essai' },
       onSubmit: async (v) => { await api.post('/api/platform/companies', v); toast('Entreprise créée.'); load(); loadStats(); },

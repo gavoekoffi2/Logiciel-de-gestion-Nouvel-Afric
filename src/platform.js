@@ -86,7 +86,8 @@ router.post('/companies', wrap(async (req, res) => {
   const email = clean(b.email).toLowerCase();
   const telephone = clean(b.telephone);
   const password = clean(b.password);
-  const illimite = noSubscriptionValueForCompany(entreprise);
+  // Illimité si : nom interne (politique companyPolicy) OU choix explicite du super-admin.
+  const illimite = (noSubscriptionValueForCompany(entreprise) || b.statut === 'illimite' || b.illimite === true) ? 1 : 0;
   const statut = illimite ? 'actif' : (['actif', 'essai', 'suspendu'].includes(b.statut) ? b.statut : 'essai');
 
   if (!entreprise) return res.status(400).json({ error: 'Nom de l’entreprise requis.' });

@@ -49,6 +49,17 @@ app.use('/api/auth', authRouter);
 // Identité visuelle de la PLATEFORME (page de connexion / inscription).
 app.get('/api/branding', async (req, res) => {
   try {
+    // Branding d'une AGENCE precise (page de connexion dediee) : /api/branding?agence=<slug>
+    const agence = String(req.query.agence || '').trim();
+    if (agence) {
+      const { normalizeCompanyName } = require('./companyPolicy');
+      const wanted = normalizeCompanyName(agence).replace(/\s+/g, '-');
+      if (wanted) {
+        const rows = await db.prepare('SELECT nom, logo FROM companies').all();
+        const match = rows.find((c) => normalizeCompanyName(c.nom).replace(/\s+/g, '-') === wanted);
+        if (match) return res.json({ entreprise: match.nom, logo: match.logo || null, agence: true });
+      }
+    }
     const p = await db.prepare('SELECT nom FROM platform WHERE id = 1').get();
     res.json({ entreprise: (p && p.nom) || 'MaGérance', logo: null });
   } catch (_) {

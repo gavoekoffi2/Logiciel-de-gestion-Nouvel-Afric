@@ -24,6 +24,14 @@
   status = 200
   force = true
 
+# Page de connexion dédiée par agence : /e/<slug> sert la page de connexion.
+# L'URL reste propre dans le navigateur ; la page lit le slug et affiche le nom
+# de l'agence (ex. /e/nouvel-afrik affiche « NOUVEL AFRIK »).
+[[redirects]]
+  from = "/e/*"
+  to = "/login.html"
+  status = 200
+
 # Anti-cache sur l'app (HTML/JS/CSS) : le navigateur revalide à chaque chargement
 # (réponse 304 si rien n'a changé), donc les utilisateurs voient toujours la
 # dernière version après un déploiement, sans avoir à forcer le rafraîchissement.

@@ -34,13 +34,26 @@
   </form>
 
   <script>
-    fetch('/api/branding').then((r) => (r.ok ? r.json() : null)).then((b) => {
-      if (b && b.entreprise) {
+    // Agence dédiée : /e/<slug> (URL propre) ou ?agence=<slug>. Sinon : branding plateforme.
+    (function () {
+      const params = new URLSearchParams(location.search);
+      let slug = (params.get('agence') || '').trim();
+      const m = location.pathname.match(/\/e\/([^/]+)/i);
+      if (!slug && m) slug = decodeURIComponent(m[1]);
+      const url = slug ? ('/api/branding?agence=' + encodeURIComponent(slug)) : '/api/branding';
+      fetch(url).then((r) => (r.ok ? r.json() : null)).then((b) => {
+        if (!b || !b.entreprise) return;
         const h1 = document.querySelector('.login-logo h1');
         if (h1) h1.textContent = b.entreprise;
+        if (b.agence) {
+          const sub = document.querySelector('.login-logo p');
+          if (sub) sub.textContent = 'Espace de gestion locative';
+          const img = document.querySelector('.login-logo .brand-mark');
+          if (img && b.logo) img.src = b.logo;
+        }
         document.title = 'Connexion — ' + b.entreprise;
-      }
-    }).catch(() => {});
+      }).catch(() => {});
+    })();
 
     const form = document.getElementById('loginForm');
     const errBox = document.getElementById('error');

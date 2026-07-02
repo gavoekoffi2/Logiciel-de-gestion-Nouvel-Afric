@@ -1,4 +1,4 @@
-import { api, icon, el, escapeHtml, dataTable, badge, fmt, pageHeader, formModal, confirmDialog, toast, MOIS } from '../core.js';
+import { api, icon, el, escapeHtml, dataTable, badge, fmt, pageHeader, formModal, openModal, confirmDialog, toast, MOIS } from '../core.js';
 
 function miniStat(label, value, danger) {
   return `<div style="background:#f8fafc;border:1px solid #eef2f6;border-radius:12px;padding:12px">
@@ -116,6 +116,77 @@ export async function render() {
     await api.del('/api/repairs/' + row.id);
     toast('Dépense supprimée.');
     render();
+  }
+
+  async function openAddTenants() {
+    const tenants = await api.get('/api/tenants');
+    const activeIds = new Set(actifs.map((s) => Number(s.tenant_id)));
+    const available = tenants.filter((t) => !activeIds.has(Number(t.id)));
+    if (!available.length) {
+      toast('Aucun locataire disponible à ajouter dans cette maison.', 'error');
+      return;
+    }
+    const rows = available.map((t) => `
+      <tr>
+        <td style="width:34px"><input type="checkbox" name="tenant" value="${t.id}" /></td>
+        <td><b>${escapeHtml(t.nom_prenoms)}</b><br><span class="muted">${escapeHtml(t.contact || '—')}</span></td>
+        <td><input type="number" name="loyer_${t.id}" min="1" step="1000" value="${Number(p.cout_loyer) || 0}" style="width:145px" /></td>
+      </tr>`).join('');
+    const { modal, close } = openModal(`
+      <div class="modal-head"><h3>Ajouter des locataires dans cette maison</h3><button class="close" data-close>&times;</button></div>
+      <form id="batchTenantForm">
+        <div class="modal-body">
+          <div id="batchError" class="alert alert-error" style="display:none"></div>
+          <div class="form-grid" style="margin-bottom:14px">
+            <div class="field"><label>Date de souscription</label><input type="date" name="date_souscription" value="${fmt.today()}" /></div>
+            <div class="field"><label>Date d’entrée</label><input type="date" name="date_entree" value="${fmt.today()}" required /></div>
+            <div class="field"><label>Date début de paiement</label><input type="date" name="date_debut_paiement" value="${fmt.today()}" required /></div>
+            <div class="field"><label>Mois de caution</label><input type="number" name="nombre_mois_caution" min="0" value="0" /></div>
+            <div class="field"><label>Mois d’avance</label><input type="number" name="nombre_mois_avance" min="0" value="0" /></div>
+            <div class="field"><label>Mois de garantie</label><input type="number" name="nombre_mois_garantie" min="0" value="0" /></div>
+          </div>
+          <div class="hint" style="margin-bottom:10px">Cochez les locataires à affecter, puis saisissez le loyer mensuel propre à chacun.</div>
+          <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Locataire</th><th class="num">Loyer mensuel</th></tr></thead><tbody>${rows}</tbody></table></div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-close>Annuler</button>
+          <button type="submit" class="btn btn-primary">Ajouter les locataires</button>
+        </div>
+      </form>`, { size: 'lg' });
+    modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = close; });
+    modal.querySelector('#batchTenantForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const selected = [...form.querySelectorAll('input[name="tenant"]:checked')];
+      const errBox = modal.querySelector('#batchError');
+      errBox.style.display = 'none';
+      if (!selected.length) {
+        errBox.textContent = 'Veuillez sélectionner au moins un locataire.';
+        errBox.style.display = 'block';
+        return;
+      }
+      const tenantsPayload = selected.map((input) => {
+        const tenantId = Number(input.value);
+        return { tenant_id: tenantId, montant_loyer: Number(form.elements[`loyer_${tenantId}`].value) || 0 };
+      });
+      try {
+        await api.post('/api/properties/' + p.id + '/tenants', {
+          date_souscription: form.elements.date_souscription.value,
+          date_entree: form.elements.date_entree.value,
+          date_debut_paiement: form.elements.date_debut_paiement.value,
+          nombre_mois_caution: Number(form.elements.nombre_mois_caution.value) || 0,
+          nombre_mois_avance: Number(form.elements.nombre_mois_avance.value) || 0,
+          nombre_mois_garantie: Number(form.elements.nombre_mois_garantie.value) || 0,
+          tenants: tenantsPayload,
+        });
+        close();
+        toast(selected.length + ' locataire(s) ajouté(s) à la maison.');
+        render();
+      } catch (err) {
+        errBox.textContent = err.message || 'Erreur';
+        errBox.style.display = 'block';
+      }
+    };
   }
 
   function renderSub(s) {
@@ -239,6 +310,9 @@ export async function render() {
       </div>
 
       ${sectionTitle('Locataires, baux et paiements attendus', 'Chaque locataire lié à ce bien, avec son bail, son échéancier et ses retards.')}
+      <div style="display:flex;justify-content:flex-end;margin:-4px 0 12px">
+        <button class="btn btn-primary btn-sm" id="addTenants">${icon('plus', 15)} Ajouter des locataires</button>
+      </div>
       <div id="subs"></div>
 
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px">
@@ -255,6 +329,7 @@ export async function render() {
     </div>`);
   pageHeader(root);
   root.querySelector('#back').onclick = () => { location.hash = '#/maisons'; };
+  root.querySelector('#addTenants').onclick = openAddTenants;
   root.querySelector('#addRepair').onclick = openRepairForm;
 
   const subsBox = root.querySelector('#subs');

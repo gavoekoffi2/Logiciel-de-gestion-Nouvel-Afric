@@ -213,7 +213,7 @@ router.get('/tenants', wrap(async (req, res) => {
       s.id AS active_subscription_id, s.code AS active_subscription_code,
       p.id AS active_property_id, p.code AS active_property_code,
       p.designation AS active_property_designation, p.type_construction AS active_property_type,
-      p.cout_loyer AS active_property_loyer
+      s.montant_loyer AS active_property_loyer
     FROM tenants t
     LEFT JOIN subscriptions s ON s.tenant_id = t.id AND s.company_id = t.company_id AND s.statut = 'Active'
     LEFT JOIN properties p ON p.id = s.property_id`;
@@ -365,12 +365,11 @@ router.get('/properties', wrap(async (req, res) => {
   res.json(rows);
 }));
 
-// Maisons disponibles (pour une nouvelle souscription).
+// Maisons sélectionnables pour une souscription.
+// Une maison peut maintenant accueillir plusieurs locataires actifs ; elle reste
+// donc disponible même si un premier bail existe déjà.
 router.get('/properties/available', wrap(async (req, res) => {
-  const current = toInt(req.query.current); // bien deja lie (en modification)
-  const rows = (await db.prepare(`${PROPERTY_SELECT} WHERE p.company_id = ?`).all(req.companyId))
-    .filter((r) => r.statut === 'Disponible' || r.id === current);
-  res.json(rows);
+  res.json(await db.prepare(`${PROPERTY_SELECT} WHERE p.company_id = ? ORDER BY p.id DESC`).all(req.companyId));
 }));
 
 function propertyPayload(body) {
@@ -503,7 +502,7 @@ function subscriptionPayload(body) {
   };
 }
 
-async function validateSubscription(s, companyId) {
+async function validateSubscription(s, companyId, excludeId = 0) {
   if (!s.property_id) return 'Veuillez sélectionner le bien (maison).';
   if (!s.tenant_id) return 'Veuillez sélectionner le locataire.';
   const prop = await db.prepare('SELECT 1 FROM properties WHERE id = ? AND company_id = ?').get(s.property_id, companyId);
@@ -513,15 +512,18 @@ async function validateSubscription(s, companyId) {
   if (!s.montant_loyer) return 'Le montant du loyer est requis.';
   if (!s.date_entree) return 'Veuillez saisir la date d’entrée.';
   if (!s.date_debut_paiement) return 'Veuillez saisir la date de début de paiement.';
+  if (s.statut === 'Active') {
+    const dup = await db.prepare(
+      `SELECT 1 FROM subscriptions
+       WHERE company_id = ? AND property_id = ? AND tenant_id = ? AND statut = 'Active' AND id <> ?`
+    ).get(companyId, s.property_id, s.tenant_id, excludeId || 0);
+    if (dup) return 'Ce locataire est déjà actif dans cette maison.';
+  }
   return null;
 }
 
-router.post('/subscriptions', wrap(async (req, res) => {
-  const cid = req.companyId;
-  const s = subscriptionPayload(req.body);
-  const err = await validateSubscription(s, cid);
-  if (err) return res.status(400).json({ error: err });
-  const code = await genCode('subscriptions', 'S', s.date_souscription);
+async function insertSubscription(companyId, payload, dateForCode) {
+  const code = await genCode('subscriptions', 'S', payload.date_souscription || dateForCode);
   const info = await db.prepare(
     `INSERT INTO subscriptions
      (company_id, code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution,
@@ -530,16 +532,25 @@ router.post('/subscriptions', wrap(async (req, res) => {
      VALUES (@company_id,@code,@property_id,@tenant_id,@date_souscription,@montant_loyer,@nombre_mois_caution,
       @montant_caution,@nombre_mois_avance,@montant_avance,@nombre_mois_garantie,@montant_garantie,
       @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@statut)`
-  ).run({ company_id: cid, code, ...s });
-  await logAction(req, 'Création', 'Souscription', code);
-  res.json(await db.prepare(`${SUB_SELECT} WHERE s.id = ?`).get(info.lastInsertRowid));
+  ).run({ company_id: companyId, code, ...payload });
+  return db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(info.lastInsertRowid, companyId);
+}
+
+router.post('/subscriptions', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const s = subscriptionPayload(req.body);
+  const err = await validateSubscription(s, cid);
+  if (err) return res.status(400).json({ error: err });
+  const saved = await insertSubscription(cid, s, s.date_souscription);
+  await logAction(req, 'Création', 'Souscription', saved && saved.code);
+  res.json(saved);
 }));
 
 router.put('/subscriptions/:id', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
   const s = subscriptionPayload(req.body);
-  const err = await validateSubscription(s, cid);
+  const err = await validateSubscription(s, cid, id);
   if (err) return res.status(400).json({ error: err });
   await db.prepare(
     `UPDATE subscriptions SET
@@ -562,6 +573,65 @@ router.delete('/subscriptions/:id', wrap(async (req, res) => {
   await db.prepare('DELETE FROM subscriptions WHERE id = ? AND company_id = ?').run(id, req.companyId);
   if (row) await logAction(req, 'Suppression', 'Souscription', row.code);
   res.json({ ok: true });
+}));
+
+// Ajout en lot de plusieurs locataires dans une maison. Chaque ligne crée un
+// bail actif avec son propre loyer mensuel, car deux locataires d'une même
+// maison peuvent payer des montants différents.
+router.post('/properties/:id/tenants', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const propertyId = toInt(req.params.id);
+  const prop = await db.prepare('SELECT * FROM properties WHERE id = ? AND company_id = ?').get(propertyId, cid);
+  if (!prop) return res.status(404).json({ error: 'Bien introuvable.' });
+
+  const lines = Array.isArray(req.body && req.body.tenants) ? req.body.tenants : [];
+  if (!lines.length) return res.status(400).json({ error: 'Veuillez sélectionner au moins un locataire.' });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const base = {
+    property_id: propertyId,
+    date_souscription: clean(req.body.date_souscription) || today,
+    date_entree: clean(req.body.date_entree) || today,
+    date_debut_paiement: clean(req.body.date_debut_paiement) || clean(req.body.date_entree) || today,
+    nombre_mois_caution: toInt(req.body.nombre_mois_caution),
+    nombre_mois_avance: toInt(req.body.nombre_mois_avance),
+    nombre_mois_garantie: toInt(req.body.nombre_mois_garantie),
+    autre_frais: clean(req.body.autre_frais),
+    montant_autre_frais: toInt(req.body.montant_autre_frais),
+    statut: 'Active',
+  };
+
+  const seen = new Set();
+  const payloads = [];
+  for (const line of lines) {
+    const tenantId = toInt(line && line.tenant_id);
+    if (!tenantId) return res.status(400).json({ error: 'Un locataire sélectionné est invalide.' });
+    if (seen.has(tenantId)) return res.status(400).json({ error: 'Un même locataire ne peut pas être ajouté deux fois dans la même opération.' });
+    seen.add(tenantId);
+    const montantLoyer = toInt(line && line.montant_loyer) || toInt(prop.cout_loyer);
+    const payload = subscriptionPayload({
+      ...base,
+      tenant_id: tenantId,
+      montant_loyer: montantLoyer,
+      montant_caution: line && line.montant_caution !== undefined ? line.montant_caution : base.nombre_mois_caution * montantLoyer,
+      montant_avance: line && line.montant_avance !== undefined ? line.montant_avance : base.nombre_mois_avance * montantLoyer,
+      montant_garantie: line && line.montant_garantie !== undefined ? line.montant_garantie : base.nombre_mois_garantie * montantLoyer,
+    });
+    const err = await validateSubscription(payload, cid);
+    if (err) {
+      const tenant = await db.prepare('SELECT nom_prenoms FROM tenants WHERE id = ? AND company_id = ?').get(tenantId, cid);
+      return res.status(400).json({ error: `${tenant ? tenant.nom_prenoms + ' : ' : ''}${err}` });
+    }
+    payloads.push(payload);
+  }
+
+  const saved = [];
+  for (const payload of payloads) {
+    const row = await insertSubscription(cid, payload, base.date_souscription);
+    saved.push(row);
+  }
+  await logAction(req, 'Création', 'Souscriptions', `${prop.code} — ${saved.length} locataire(s)`);
+  res.json({ ok: true, count: saved.length, subscriptions: saved });
 }));
 
 // ===========================================================================

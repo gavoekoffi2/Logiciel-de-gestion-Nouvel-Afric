@@ -113,7 +113,7 @@ export async function render() {
         { name: 'tenant_id', label: 'Locataire', type: 'select', required: true,
           options: tenants.map((t) => ({ value: t.id, label: t.nom_prenoms })) },
         { name: 'date_souscription', label: 'Date de souscription', type: 'date' },
-        { name: 'montant_loyer', label: 'Montant du loyer', type: 'number', readonly: true },
+        { name: 'montant_loyer', label: 'Montant du loyer', type: 'number', required: true, min: 1, step: 1000, hint: 'Modifiable : chaque locataire peut avoir son propre loyer.' },
         { name: 'nombre_mois_caution', label: 'Nombre de mois de caution', type: 'number', min: 0 },
         { name: 'montant_caution', label: 'Montant caution', type: 'number', readonly: true },
         { name: 'nombre_mois_avance', label: 'Nombre de mois d’avance', type: 'number', min: 0 },

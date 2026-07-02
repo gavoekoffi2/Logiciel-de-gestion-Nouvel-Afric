@@ -130,7 +130,10 @@ export async function render() {
       <tr>
         <td style="width:34px"><input type="checkbox" name="tenant" value="${t.id}" /></td>
         <td><b>${escapeHtml(t.nom_prenoms)}</b><br><span class="muted">${escapeHtml(t.contact || '—')}</span></td>
-        <td><input type="number" name="loyer_${t.id}" min="1" step="1000" value="${Number(p.cout_loyer) || 0}" style="width:145px" /></td>
+        <td><input type="number" name="loyer_${t.id}" min="1" step="1000" value="${Number(p.cout_loyer) || 0}" style="width:130px" /></td>
+        <td><input type="number" name="caution_${t.id}" min="0" step="1000" value="0" style="width:130px" /></td>
+        <td><input type="number" name="avance_${t.id}" min="0" step="1000" value="0" style="width:130px" /></td>
+        <td><input type="number" name="garantie_${t.id}" min="0" step="1000" value="0" style="width:130px" /></td>
       </tr>`).join('');
     const { modal, close } = openModal(`
       <div class="modal-head"><h3>Ajouter des locataires dans cette maison</h3><button class="close" data-close>&times;</button></div>
@@ -145,8 +148,8 @@ export async function render() {
             <div class="field"><label>Mois d’avance</label><input type="number" name="nombre_mois_avance" min="0" value="0" /></div>
             <div class="field"><label>Mois de garantie</label><input type="number" name="nombre_mois_garantie" min="0" value="0" /></div>
           </div>
-          <div class="hint" style="margin-bottom:10px">Cochez les locataires à affecter, puis saisissez le loyer mensuel propre à chacun.</div>
-          <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Locataire</th><th class="num">Loyer mensuel</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <div class="hint" style="margin-bottom:10px">Cochez les locataires à affecter. Saisissez librement le loyer, la caution, l’avance et la garantie pour chaque locataire.</div>
+          <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Locataire</th><th class="num">Loyer</th><th class="num">Caution</th><th class="num">Avance</th><th class="num">Garantie</th></tr></thead><tbody>${rows}</tbody></table></div>
         </div>
         <div class="modal-foot">
           <button type="button" class="btn btn-ghost" data-close>Annuler</button>
@@ -167,7 +170,13 @@ export async function render() {
       }
       const tenantsPayload = selected.map((input) => {
         const tenantId = Number(input.value);
-        return { tenant_id: tenantId, montant_loyer: Number(form.elements[`loyer_${tenantId}`].value) || 0 };
+        return {
+          tenant_id: tenantId,
+          montant_loyer: Number(form.elements[`loyer_${tenantId}`].value) || 0,
+          montant_caution: Number(form.elements[`caution_${tenantId}`].value) || 0,
+          montant_avance: Number(form.elements[`avance_${tenantId}`].value) || 0,
+          montant_garantie: Number(form.elements[`garantie_${tenantId}`].value) || 0,
+        };
       });
       try {
         await api.post('/api/properties/' + p.id + '/tenants', {
@@ -274,6 +283,7 @@ export async function render() {
             <div class="muted" style="font-size:13px">Code : <span style="font-family:monospace;font-weight:800;color:#0f172a">${escapeHtml(p.code)}</span></div>
           </div>
           <div style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" id="addTenantsTop">${icon('plus', 15)} Ajouter des locataires</button>
             ${badge(p.statut, p.statut === 'Occupé' ? 'amber' : 'green')}
           </div>
         </div>
@@ -329,6 +339,7 @@ export async function render() {
     </div>`);
   pageHeader(root);
   root.querySelector('#back').onclick = () => { location.hash = '#/maisons'; };
+  root.querySelector('#addTenantsTop').onclick = openAddTenants;
   root.querySelector('#addTenants').onclick = openAddTenants;
   root.querySelector('#addRepair').onclick = openRepairForm;
 

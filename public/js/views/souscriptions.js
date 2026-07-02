@@ -114,12 +114,12 @@ export async function render() {
           options: tenants.map((t) => ({ value: t.id, label: t.nom_prenoms })) },
         { name: 'date_souscription', label: 'Date de souscription', type: 'date' },
         { name: 'montant_loyer', label: 'Montant du loyer', type: 'number', required: true, min: 1, step: 1000, hint: 'Modifiable : chaque locataire peut avoir son propre loyer.' },
-        { name: 'nombre_mois_caution', label: 'Nombre de mois de caution', type: 'number', min: 0 },
-        { name: 'montant_caution', label: 'Montant caution', type: 'number', readonly: true },
-        { name: 'nombre_mois_avance', label: 'Nombre de mois d’avance', type: 'number', min: 0 },
-        { name: 'montant_avance', label: 'Montant avance', type: 'number', readonly: true },
-        { name: 'nombre_mois_garantie', label: 'Nombre de mois de garantie', type: 'number', min: 0 },
-        { name: 'montant_garantie', label: 'Montant garantie', type: 'number', readonly: true },
+        { name: 'nombre_mois_caution', label: 'Nombre de mois de caution', type: 'number', min: 0, hint: 'Indicatif : le montant reste saisissable librement.' },
+        { name: 'montant_caution', label: 'Montant caution', type: 'number', min: 0, step: 1000, hint: 'À saisir manuellement.' },
+        { name: 'nombre_mois_avance', label: 'Nombre de mois d’avance', type: 'number', min: 0, hint: 'Indicatif : le montant reste saisissable librement.' },
+        { name: 'montant_avance', label: 'Montant avance', type: 'number', min: 0, step: 1000, hint: 'À saisir manuellement.' },
+        { name: 'nombre_mois_garantie', label: 'Nombre de mois de garantie', type: 'number', min: 0, hint: 'Indicatif : le montant reste saisissable librement.' },
+        { name: 'montant_garantie', label: 'Montant garantie', type: 'number', min: 0, step: 1000, hint: 'À saisir manuellement.' },
         ...FEE_LABELS.map((label) => ({ name: `fee_${label}`, label: `${label} — montant`, type: 'number', min: 0, step: 500 })),
         { name: 'fee_autre_label', label: 'Autre frais — libellé' },
         { name: 'fee_autre_montant', label: 'Autre frais — montant', type: 'number', min: 0, step: 500 },
@@ -139,9 +139,11 @@ export async function render() {
           applyTenantFees(tenantMap[String(v.tenant_id)], set);
         }
         const loyer = Number(v.montant_loyer) || 0;
-        set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
-        set('montant_avance', (Number(v.nombre_mois_avance) || 0) * loyer);
-        set('montant_garantie', (Number(v.nombre_mois_garantie) || 0) * loyer);
+        if (!row && changed === 'property_id') {
+          set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
+          set('montant_avance', (Number(v.nombre_mois_avance) || 0) * loyer);
+          set('montant_garantie', (Number(v.nombre_mois_garantie) || 0) * loyer);
+        }
         set('montant_autre_frais', feesTotal(v));
       },
       onSubmit: async (v) => {

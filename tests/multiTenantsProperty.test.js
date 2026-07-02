@@ -96,18 +96,24 @@ test('a property can receive several active tenants with different rents in one 
       nombre_mois_caution: 1,
       nombre_mois_avance: 0,
       tenants: [
-        { tenant_id: tenantA.data.id, montant_loyer: 45000 },
-        { tenant_id: tenantB.data.id, montant_loyer: 70000 },
+        { tenant_id: tenantA.data.id, montant_loyer: 45000, montant_caution: 90000, montant_avance: 25000, montant_garantie: 10000 },
+        { tenant_id: tenantB.data.id, montant_loyer: 70000, montant_caution: 110000, montant_avance: 30000, montant_garantie: 15000 },
       ],
     }, cookie);
     assert.equal(batch.res.status, 200);
     assert.equal(batch.data.count, 2);
     assert.deepEqual(batch.data.subscriptions.map((s) => s.montant_loyer).sort((a, b) => a - b), [45000, 70000]);
+    assert.deepEqual(batch.data.subscriptions.map((s) => s.montant_caution).sort((a, b) => a - b), [90000, 110000]);
+    assert.deepEqual(batch.data.subscriptions.map((s) => s.montant_avance).sort((a, b) => a - b), [25000, 30000]);
+    assert.deepEqual(batch.data.subscriptions.map((s) => s.montant_garantie).sort((a, b) => a - b), [10000, 15000]);
 
     const details = await request(baseUrl, 'GET', `/api/properties/${property.data.id}/details`, null, cookie);
     assert.equal(details.res.status, 200);
     assert.equal(details.data.totals.nombre_locataires_actifs, 2);
     assert.deepEqual(details.data.subscriptions.map((s) => s.montant_loyer).sort((a, b) => a - b), [45000, 70000]);
+    assert.deepEqual(details.data.subscriptions.map((s) => s.montant_caution).sort((a, b) => a - b), [90000, 110000]);
+    assert.deepEqual(details.data.subscriptions.map((s) => s.montant_avance).sort((a, b) => a - b), [25000, 30000]);
+    assert.deepEqual(details.data.subscriptions.map((s) => s.montant_garantie).sort((a, b) => a - b), [10000, 15000]);
 
     const duplicate = await request(baseUrl, 'POST', `/api/properties/${property.data.id}/tenants`, {
       date_entree: '2026-01-01',

@@ -90,6 +90,9 @@ app.use('/api', requireCompany, requireActiveSubscription, apiRouter);
 
 // ----- Pages publiques ---------------------------------------------------
 app.get('/login', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+// Page de connexion dédiée par agence : /e/<slug>
+// Exemple : /e/nouvel-afrik affiche la page de connexion avec le branding de l'agence.
+app.get('/e/:slug', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'register.html')));
 
 // Application principale : nécessite une session.

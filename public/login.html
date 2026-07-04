@@ -50,6 +50,7 @@
           if (sub) sub.textContent = 'Espace de gestion locative';
           const img = document.querySelector('.login-logo .brand-mark');
           if (img && b.logo) img.src = b.logo;
+          if (img) img.alt = b.entreprise;
         }
         document.title = 'Connexion — ' + b.entreprise;
       }).catch(() => {});

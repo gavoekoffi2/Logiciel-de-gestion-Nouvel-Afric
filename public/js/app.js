@@ -16,6 +16,7 @@ import * as recouvrement from './views/recouvrement.js';
 import * as parametres from './views/parametres.js';
 import * as journal from './views/journal.js';
 import * as abonnement from './views/abonnement.js';
+import * as sauvegardes from './views/sauvegardes.js';
 import * as superadmin from './views/superadmin.js';
 
 // Routes des utilisateurs d'entreprise.
@@ -32,6 +33,7 @@ const ROUTES = {
   recouvrement:  { label: 'Recouvrement',    icon: 'collect',       mod: recouvrement },
   reversements:  { label: 'Reversements',    icon: 'money',         mod: reversements },
   abonnement:    { label: 'Mon abonnement',  icon: 'wallet',        mod: abonnement },
+  sauvegardes:   { label: 'Sauvegardes',     icon: 'inbox',         mod: sauvegardes, adminOnly: true },
   parametres:    { label: 'Paramètres',      icon: 'settings',      mod: parametres, adminOnly: true },
   journal:       { label: 'Journal d’activité', icon: 'clock',      mod: journal, adminOnly: true },
 };
@@ -63,6 +65,7 @@ function buildNav() {
   if (store.user.role === 'admin') {
     nav.appendChild(navSep('Administration'));
     if (!noSubscriptionAccount()) nav.appendChild(navLink('abonnement'));
+    nav.appendChild(navLink('sauvegardes'));
     nav.appendChild(navLink('parametres'));
     nav.appendChild(navLink('journal'));
   }

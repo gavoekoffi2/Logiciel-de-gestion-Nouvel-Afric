@@ -1405,11 +1405,13 @@ subscriptionRouter.post('/request', wrap(async (req, res) => {
 
 // Tables metier exportees, dans l'ordre des dependances (parent -> enfant).
 // payouts est place avant payments car payments.payout_id y fait reference.
-const DATA_TABLES = ['owners', 'tenants', 'properties', 'subscriptions', 'payouts', 'payments', 'repairs'];
+// audit_log est exporte/restaure en dernier : c'est l'historique propre a
+// l'entreprise, mais il ne doit jamais bloquer la restauration des donnees.
+const DATA_TABLES = ['owners', 'tenants', 'properties', 'subscriptions', 'payouts', 'payments', 'repairs', 'audit_log'];
 
 dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
   const cid = req.companyId;
-  const [company, owners, tenants, properties, subscriptions, payouts, payments, repairs] = await Promise.all([
+  const [company, owners, tenants, properties, subscriptions, payouts, payments, repairs, audit_log] = await Promise.all([
     db.prepare('SELECT nom, telephone, email, adresse, devise FROM companies WHERE id = ?').get(cid),
     db.prepare('SELECT * FROM owners WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM tenants WHERE company_id = ? ORDER BY id').all(cid),
@@ -1418,6 +1420,7 @@ dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
     db.prepare('SELECT * FROM payouts WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM payments WHERE company_id = ? ORDER BY id').all(cid),
     db.prepare('SELECT * FROM repairs WHERE company_id = ? ORDER BY id').all(cid),
+    db.prepare('SELECT * FROM audit_log WHERE company_id = ? ORDER BY id').all(cid),
   ]);
 
   const data = {
@@ -1425,7 +1428,7 @@ dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
     version: 1,
     exporte_le: new Date().toISOString(),
     entreprise: company || null,
-    donnees: { owners, tenants, properties, subscriptions, payouts, payments, repairs },
+    donnees: { owners, tenants, properties, subscriptions, payouts, payments, repairs, audit_log },
   };
 
   const stamp = new Date().toISOString().slice(0, 10);
@@ -1451,9 +1454,24 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const payouts = list('payouts');
   const payments = list('payments');
   const repairs = list('repairs');
+  const audit_log = list('audit_log');
 
-  if (![owners, tenants, properties, subscriptions, payouts, payments, repairs].some((a) => a.length)) {
+  if (![owners, tenants, properties, subscriptions, payouts, payments, repairs, audit_log].some((a) => a.length)) {
     return res.status(400).json({ error: 'Fichier de sauvegarde vide ou invalide.' });
+  }
+
+  // Le profil de l'entreprise est sauvegarde avec les donnees. A la restauration,
+  // on le remet a jour par defaut pour que l'entreprise retrouve sa devise et ses
+  // coordonnees apres migration. Le compte de connexion reste celui de la session.
+  if (body.entreprise && body.restaurerProfil !== false) {
+    await db.prepare('UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=? WHERE id=?').run(
+      clean(body.entreprise.nom) || 'Mon entreprise',
+      clean(body.entreprise.telephone),
+      clean(body.entreprise.email),
+      clean(body.entreprise.adresse),
+      clean(body.entreprise.devise) || 'FCFA',
+      cid
+    );
   }
 
   // 'remplacer' : efface d'abord les donnees actuelles de CETTE entreprise.
@@ -1472,7 +1490,7 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const propertyMap = new Map();
   const subscriptionMap = new Map();
   const payoutMap = new Map();
-  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payouts: 0, payments: 0, repairs: 0 };
+  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payouts: 0, payments: 0, repairs: 0, audit_log: 0 };
 
   for (const o of owners) {
     const id = (await db.prepare(
@@ -1485,8 +1503,11 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
 
   for (const t of tenants) {
     const id = (await db.prepare(
-      'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution) VALUES (?,?,?,?,?,?)'
-    ).run(cid, clean(t.nom_prenoms) || 'Sans nom', clean(t.contact), clean(t.email), clean(t.adresse), toInt(t.caution))).lastInsertRowid;
+      'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution, autre_frais, montant_autre_frais) VALUES (?,?,?,?,?,?,?,?)'
+    ).run(
+      cid, clean(t.nom_prenoms) || 'Sans nom', clean(t.contact), clean(t.email), clean(t.adresse),
+      toInt(t.caution), clean(t.autre_frais), toInt(t.montant_autre_frais)
+    )).lastInsertRowid;
     if (t.id != null) tenantMap.set(t.id, id);
     counts.tenants++;
   }
@@ -1551,13 +1572,15 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
     const code = await uniqueCode('payments', 'R', p.code);
     await db.prepare(
       `INSERT INTO payments
-       (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer, mois_concerne, annee_concernee, statut, payout_id, numero_recu)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer,
+        mois_concerne, annee_concernee, nombre_mois_payes, mois_payes, nombre_mois_dus, mois_dus, statut, payout_id, numero_recu)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       cid, code, subscriptionMap.get(p.subscription_id) || null,
       propertyMap.get(p.property_id) || null, tenantMap.get(p.tenant_id) || null,
       clean(p.date) || null, toInt(p.montant_a_payer), toInt(p.montant_paye), toInt(p.reste_a_payer),
       clean(p.mois_concerne), p.annee_concernee != null ? toInt(p.annee_concernee) : null,
+      toInt(p.nombre_mois_payes) || 1, clean(p.mois_payes), toInt(p.nombre_mois_dus), clean(p.mois_dus),
       clean(p.statut) || 'Soldé', payoutMap.get(p.payout_id) || null, clean(p.numero_recu) || null
     );
     counts.payments++;
@@ -1570,6 +1593,21 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
       'INSERT INTO repairs (company_id, property_id, mois, annee, montant, description) VALUES (?,?,?,?,?,?)'
     ).run(cid, pid, clean(v.mois) || null, v.annee != null ? toInt(v.annee) : null, toInt(v.montant), clean(v.description) || null);
     counts.repairs++;
+  }
+
+  for (const a of audit_log) {
+    await db.prepare(
+      'INSERT INTO audit_log (company_id, user_id, user_nom, action, entity, label, created_at) VALUES (?,?,?,?,?,?,?)'
+    ).run(
+      cid,
+      null,
+      clean(a.user_nom) || null,
+      clean(a.action) || 'Restauration',
+      clean(a.entity) || null,
+      clean(a.label) || null,
+      clean(a.created_at) || new Date().toISOString()
+    );
+    counts.audit_log++;
   }
 
   res.json({ ok: true, mode, importe: counts });

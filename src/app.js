@@ -29,9 +29,9 @@ const app = express();
 app.disable('x-powered-by');
 if (isProd) app.set('trust proxy', 1);
 // Limite genereuse : couvre les logos (data URL) et surtout la RESTAURATION d'une
-// sauvegarde complete (proprietaires + locataires + biens + baux + reglements).
-app.use(express.json({ limit: '12mb' }));
-app.use(express.urlencoded({ extended: true }));
+// sauvegarde complete (plateforme + comptes + entreprises + donnees metier).
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use(cookieSession({
   name: 'naf.sid',

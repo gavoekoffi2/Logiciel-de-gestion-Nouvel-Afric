@@ -39,11 +39,12 @@ const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'quartiers', 'locata
 
 // Routes du super-administrateur.
 const SUPER_ROUTES = {
-  entreprises: { label: 'Entreprises', icon: 'building',  mod: superadmin.companies },
-  plateforme:  { label: 'Plateforme',  icon: 'settings',  mod: superadmin.platform },
-  compte:      { label: 'Mon compte',  icon: 'users',     mod: superadmin.account },
+  entreprises:  { label: 'Entreprises',  icon: 'building',  mod: superadmin.companies },
+  plateforme:   { label: 'Plateforme',   icon: 'settings',  mod: superadmin.platform },
+  sauvegardes:  { label: 'Sauvegardes',  icon: 'inbox',     mod: superadmin.backups },
+  compte:       { label: 'Mon compte',   icon: 'users',     mod: superadmin.account },
 };
-const SUPER_NAV = ['entreprises', 'plateforme', 'compte'];
+const SUPER_NAV = ['entreprises', 'plateforme', 'sauvegardes', 'compte'];
 
 const routesFor = () => (store.isSuper ? SUPER_ROUTES : ROUTES);
 const blocked = () => !store.isSuper && store.company && !store.company.actif;

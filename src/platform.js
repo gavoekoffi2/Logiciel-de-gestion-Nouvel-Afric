@@ -202,6 +202,27 @@ router.post('/companies/:id/admin-password', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Creer un compte dans une entreprise (assistant, secretaire ou administrateur).
+router.post('/companies/:id/users', wrap(async (req, res) => {
+  const companyId = toInt(req.params.id);
+  const c = await db.prepare('SELECT id FROM companies WHERE id = ?').get(companyId);
+  if (!c) return res.status(404).json({ error: 'Entreprise introuvable.' });
+  const email = clean(req.body && req.body.email).toLowerCase();
+  const password = clean(req.body && req.body.password);
+  const nom = clean(req.body && req.body.nom);
+  const role = ['admin', 'assistant', 'secretaire'].includes(clean(req.body && req.body.role)) ? clean(req.body.role) : 'secretaire';
+  if (!isEmail(email)) return res.status(400).json({ error: 'E-mail invalide.' });
+  if (password.length < 6) return res.status(400).json({ error: 'Mot de passe : 6 caractères minimum.' });
+  if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
+    return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée.' });
+  }
+  const info = await db.prepare(
+    'INSERT INTO users (username, email, password, nom, role, company_id, actif) VALUES (?, ?, ?, ?, ?, ?, 1)'
+  ).run(email, email, hashPassword(password), nom || email, role, companyId);
+  const user = await db.prepare('SELECT id, email, nom, role, actif, company_id, created_at FROM users WHERE id = ?').get(info.lastInsertRowid);
+  res.json(user);
+}));
+
 // Supprimer une entreprise (et toutes ses donnees).
 router.delete('/companies/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
@@ -234,6 +255,113 @@ router.put('/settings', wrap(async (req, res) => {
     clean(b.message)
   );
   res.json(await db.prepare('SELECT * FROM platform WHERE id = 1').get());
+}));
+
+// ---------------------------------------------------------------------------
+// Sauvegarde / restauration COMPLETE de la plateforme — super-admin uniquement.
+//
+// Cette sauvegarde contient les comptes, entreprises, abonnements, parametrages,
+// donnees metier et journal. Elle sert a redeployer sur un autre hebergeur puis
+// tout remettre en place en un clic.
+// ---------------------------------------------------------------------------
+const FULL_BACKUP_TABLES = [
+  'platform', 'settings', 'companies', 'users',
+  'owners', 'tenants', 'properties', 'subscriptions', 'payouts', 'payments', 'repairs', 'audit_log',
+];
+const FULL_BACKUP_DELETE_ORDER = [
+  'audit_log', 'repairs', 'payments', 'payouts', 'subscriptions', 'properties', 'tenants', 'owners',
+  'users', 'companies', 'settings', 'platform',
+];
+
+function ident(name) {
+  if (!FULL_BACKUP_TABLES.includes(name)) throw new Error('Table non autorisée.');
+  return `"${name}"`;
+}
+
+async function columnsFor(table) {
+  const rows = await db.prepare(`PRAGMA table_info(${ident(table)})`).all();
+  return rows.map((r) => r.name).filter(Boolean);
+}
+
+async function tableRows(table) {
+  return db.prepare(`SELECT * FROM ${ident(table)} ORDER BY id`).all();
+}
+
+async function insertRows(table, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return 0;
+  const columns = await columnsFor(table);
+  let count = 0;
+  for (const row of rows) {
+    const names = columns.filter((c) => Object.prototype.hasOwnProperty.call(row, c));
+    if (names.length === 0) continue;
+    const sql = `INSERT INTO ${ident(table)} (${names.map((n) => `"${n}"`).join(',')}) VALUES (${names.map(() => '?').join(',')})`;
+    await db.prepare(sql).run(...names.map((n) => row[n]));
+    count += 1;
+  }
+  return count;
+}
+
+function backupCounts(data) {
+  const counts = {};
+  for (const t of FULL_BACKUP_TABLES) counts[t] = Array.isArray(data[t]) ? data[t].length : 0;
+  return counts;
+}
+
+router.get('/backup/export', wrap(async (req, res) => {
+  const tables = {};
+  for (const t of FULL_BACKUP_TABLES) tables[t] = await tableRows(t);
+  const current = await db.prepare('SELECT id, email, nom, role FROM users WHERE id = ?').get(req.userId);
+  const payload = {
+    format: 'nouvelafric.platform.backup',
+    version: 1,
+    exporte_le: new Date().toISOString(),
+    exporte_par: current ? { id: current.id, email: current.email, nom: current.nom, role: current.role } : { id: req.userId },
+    tables,
+    counts: backupCounts(tables),
+  };
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="nouvel-afric-sauvegarde-complete-${stamp}.json"`);
+  res.send(JSON.stringify(payload, null, 2));
+}));
+
+router.post('/backup/import', wrap(async (req, res) => {
+  const body = req.body || {};
+  const tables = body.tables || body.donnees || null;
+  if (!tables || typeof tables !== 'object') {
+    return res.status(400).json({ error: 'Fichier de sauvegarde complet invalide.' });
+  }
+  if (clean(body.confirmation) !== 'RESTAURER') {
+    return res.status(400).json({ error: 'Confirmation requise : saisissez RESTAURER.' });
+  }
+
+  const currentSuperadmin = await db.prepare("SELECT * FROM users WHERE id = ? AND role = 'superadmin'").get(req.userId);
+
+  for (const t of FULL_BACKUP_DELETE_ORDER) {
+    await db.prepare(`DELETE FROM ${ident(t)}`).run();
+  }
+
+  const imported = {};
+  for (const t of FULL_BACKUP_TABLES) {
+    imported[t] = await insertRows(t, Array.isArray(tables[t]) ? tables[t] : []);
+  }
+
+  const hasSuperadmin = await db.prepare("SELECT 1 FROM users WHERE role = 'superadmin' AND actif = 1 LIMIT 1").get();
+  if (!hasSuperadmin && currentSuperadmin) {
+    await insertRows('users', [{ ...currentSuperadmin, actif: 1 }]);
+    imported.users += 1;
+  }
+
+  const hasPlatform = await db.prepare('SELECT 1 FROM platform WHERE id = 1').get();
+  if (!hasPlatform) {
+    await db.prepare(
+      `INSERT INTO platform (id, nom, contact_telephone, contact_whatsapp, contact_email, prix_annuel, devise, message)
+       VALUES (1, 'MaGérance', '', '', '', 50000, 'FCFA', '')`
+    ).run();
+    imported.platform += 1;
+  }
+
+  res.json({ ok: true, message: 'Restauration complète terminée.', imported });
 }));
 
 module.exports = router;

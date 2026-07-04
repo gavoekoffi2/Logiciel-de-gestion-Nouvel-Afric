@@ -1,6 +1,6 @@
 // Espace SUPER-ADMINISTRATEUR : entreprises, parametres plateforme, compte.
 import {
-  api, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, icon, store, pageHeader,
+  api, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, icon, store, pageHeader, downloadJSON,
 } from '../core.js';
 
 function frDate(iso) {
@@ -60,6 +60,7 @@ async function renderCompanies() {
     else mk('Suspendre', 'btn-ghost', () => suspendre(row));
     const edit = el(`<button class="btn btn-icon btn-sm btn-ghost" title="Modifier">${icon('edit', 15)}</button>`); edit.onclick = () => openEdit(row); box.appendChild(edit);
     const pwd = el(`<button class="btn btn-icon btn-sm btn-ghost" title="Changer le mot de passe administrateur">🔑</button>`); pwd.onclick = () => resetPassword(row); box.appendChild(pwd);
+    const usr = el(`<button class="btn btn-icon btn-sm btn-ghost" title="Créer assistant / secrétaire">👤</button>`); usr.onclick = () => createUser(row); box.appendChild(usr);
     const del = el(`<button class="btn btn-icon btn-sm btn-ghost" title="Supprimer">${icon('trash', 15)}</button>`); del.onclick = () => remove(row); box.appendChild(del);
     return box;
   }
@@ -126,6 +127,29 @@ async function renderCompanies() {
           await api.post(`/api/platform/companies/${row.id}/admin-password`, { password: v.password });
           toast('Mot de passe de l’entreprise mis à jour.');
         } catch (e) { toast(e.message, 'error'); }
+      },
+    });
+  }
+
+  function createUser(row) {
+    formModal({
+      title: `Nouveau compte — ${row.nom}`,
+      size: 'lg',
+      fields: [
+        { name: 'nom', label: 'Nom complet', required: true },
+        { name: 'email', label: 'E-mail de connexion', required: true },
+        { name: 'password', label: 'Mot de passe provisoire', required: true, hint: '6 caractères minimum.' },
+        { name: 'role', label: 'Rôle', type: 'select', required: true, options: [
+          { value: 'assistant', label: 'Assistant' },
+          { value: 'secretaire', label: 'Secrétaire' },
+          { value: 'admin', label: 'Administrateur entreprise' },
+        ] },
+      ],
+      values: { role: 'assistant' },
+      onSubmit: async (v) => {
+        await api.post(`/api/platform/companies/${row.id}/users`, v);
+        toast('Compte utilisateur créé.');
+        load();
       },
     });
   }
@@ -233,6 +257,77 @@ async function renderPlatform() {
 }
 
 // =========================================================================
+// SAUVEGARDES COMPLETES
+// =========================================================================
+async function renderBackups() {
+  const root = el(`
+    <div class="grid" style="grid-template-columns:1fr;gap:18px;max-width:880px">
+      <div class="card card-pad">
+        <h3 style="font-size:16px;margin-bottom:6px">Sauvegarde complète de la plateforme</h3>
+        <p class="muted" style="margin:0 0 16px;font-size:13px">
+          Télécharge un fichier JSON contenant les comptes, entreprises, abonnements, paramètres, propriétaires, locataires, biens, souscriptions, règlements, reversements, réparations et journal d’activité.
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="exportBtn">${icon('inbox', 16)} Télécharger la sauvegarde complète</button>
+        </div>
+      </div>
+
+      <div class="card card-pad">
+        <h3 style="font-size:16px;margin-bottom:6px">Restaurer sur ce logiciel</h3>
+        <p class="muted" style="margin:0 0 12px;font-size:13px">
+          À utiliser après un redéploiement ou un changement d’hébergeur. La restauration remet toute la plateforme comme dans le fichier de sauvegarde.
+        </p>
+        <div class="alert alert-error" style="margin-bottom:14px">
+          Attention : cette action remplace toutes les données actuelles de cette plateforme. Gardez toujours une sauvegarde récente avant de restaurer.
+        </div>
+        <form id="restoreForm" class="form-grid">
+          <div class="field col-2"><label>Fichier de sauvegarde complet (.json)</label><input type="file" name="file" accept="application/json,.json" /></div>
+          <div class="field"><label>Confirmation</label><input name="confirmation" placeholder="Tapez RESTAURER" /></div>
+          <div class="field"><label>Protection super-admin</label><input value="Votre compte super-admin actif est conservé si le fichier n’en contient aucun." readonly /></div>
+          <div class="col-2" style="text-align:right"><button class="btn btn-danger" type="submit">Restaurer toutes les données</button></div>
+        </form>
+      </div>
+    </div>`);
+  pageHeader(root);
+
+  root.querySelector('#exportBtn').onclick = async () => {
+    try {
+      const res = await fetch('/api/platform/backup/export');
+      if (!res.ok) throw new Error('Export impossible');
+      const data = await res.json();
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      downloadJSON(`nouvel-afric-sauvegarde-complete-${stamp}.json`, data);
+      toast('Sauvegarde complète téléchargée.');
+    } catch (err) { toast(err.message || 'Export impossible', 'error'); }
+  };
+
+  const form = root.querySelector('#restoreForm');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const file = form.elements.file.files && form.elements.file.files[0];
+    const confirmation = form.elements.confirmation.value.trim();
+    if (!file) return toast('Choisissez un fichier de sauvegarde.', 'error');
+    if (confirmation !== 'RESTAURER') return toast('Tapez RESTAURER pour confirmer.', 'error');
+    const ok = await confirmDialog({
+      title: 'Restaurer toute la plateforme',
+      danger: true,
+      okLabel: 'Oui, restaurer',
+      message: 'Cette restauration remplace les données actuelles par celles du fichier. Continuer ?',
+    });
+    if (!ok) return;
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      const result = await api.post('/api/platform/backup/import', { ...backup, confirmation });
+      toast(result.message || 'Restauration terminée.');
+      form.reset();
+    } catch (err) {
+      toast(err.message || 'Restauration impossible', 'error');
+    }
+  });
+}
+
+// =========================================================================
 // MON COMPTE (super-admin)
 // =========================================================================
 async function renderAccount() {
@@ -288,4 +383,5 @@ async function renderAccount() {
 
 export const companies = { render: renderCompanies };
 export const platform = { render: renderPlatform };
+export const backups = { render: renderBackups };
 export const account = { render: renderAccount };

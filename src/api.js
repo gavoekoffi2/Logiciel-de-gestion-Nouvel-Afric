@@ -850,7 +850,8 @@ router.get('/recouvrement', wrap(async (req, res) => {
   for (const M of maisons.values()) {
     const taux = M.part_commission || 0;
     M.reparations = repByProp.get(M.property_id) || 0;
-    M.ecart = Math.max(0, M.total_du - M.total_paye);
+    const ecartBrut = M.total_du - M.total_paye;
+    M.ecart = ecartBrut > 1 ? ecartBrut : 0;
     M.commission_partielle = Math.round(M.total_paye * taux / 100);
     M.commission_generale = Math.round(M.total_du * taux / 100);
     M.solde = M.total_paye - M.reparations - M.commission_generale;
@@ -906,12 +907,14 @@ async function paymentPayload(body, companyId) {
   let property_id = toInt(body.property_id) || null;
   let tenant_id = toInt(body.tenant_id) || null;
   let montant_a_payer = toInt(body.montant_a_payer);
+  let montant_loyer_unitaire = 0;
 
   // On complete automatiquement le bien, le locataire et le loyer du a partir
   // de la souscription choisie (en restant dans la meme entreprise).
   if (subscription_id) {
     const sub = await db.prepare('SELECT * FROM subscriptions WHERE id = ? AND company_id = ?').get(subscription_id, companyId);
     if (sub) {
+      montant_loyer_unitaire = toInt(sub.montant_loyer);
       if (!property_id) property_id = sub.property_id;
       if (!tenant_id) tenant_id = sub.tenant_id;
       if (!montant_a_payer) montant_a_payer = sub.montant_loyer;
@@ -925,7 +928,7 @@ async function paymentPayload(body, companyId) {
     ...body,
     montant_a_payer,
     montant_paye,
-    loyer: montant_a_payer,
+    loyer: montant_loyer_unitaire || undefined,
   });
   const duePeriods = parsePeriods(body.mois_dus, null, body.annee_concernee);
   const reste = normalized.reste;

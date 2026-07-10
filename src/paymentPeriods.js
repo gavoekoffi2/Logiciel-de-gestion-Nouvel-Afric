@@ -36,13 +36,17 @@ function parsePeriods(value, fallbackMonth, fallbackYear) {
   });
 }
 
+const PAYMENT_TOLERANCE = 1;
+
 function normalizePaidMonths(body) {
   const months = parsePeriods(body.mois_payes || body.mois_payes_liste, body.mois_concerne, body.annee_concernee);
   const count = months.length || toInt(body.nombre_mois_payes) || 1;
-  const unitDue = toInt(body.loyer) || toInt(body.montant_a_payer);
-  const amountDue = unitDue * count;
+  const unitDue = toInt(body.loyer);
+  const explicitDue = toInt(body.montant_a_payer);
+  const amountDue = unitDue ? unitDue * count : explicitDue;
   const amountPaid = toInt(body.montant_paye);
-  const reste = Math.max(0, amountDue - amountPaid);
+  const diff = amountDue - amountPaid;
+  const reste = diff > PAYMENT_TOLERANCE ? diff : 0;
   return {
     months,
     count,
@@ -82,7 +86,7 @@ function summarizeRecoveryMonths(expectedMonths, paidEntry, loyer) {
   const due = [];
   for (const m of expectedMonths || []) {
     const e = paid.get(periodKey(m));
-    if (e && e.amount >= loyer) paidExpected.push(m);
+    if (e && e.amount + PAYMENT_TOLERANCE >= loyer) paidExpected.push(m);
     else due.push(m);
   }
   const credit = [];
@@ -105,7 +109,7 @@ function summarizeRecoveryMonths(expectedMonths, paidEntry, loyer) {
     montant_du: montantDu,
     montant_paye: Math.min(totalPaid, montantDu),
     montant_paye_total: totalPaid,
-    ecart: Math.max(0, montantDu - totalPaid),
+    ecart: Math.max(0, montantDu - totalPaid) <= PAYMENT_TOLERANCE ? 0 : Math.max(0, montantDu - totalPaid),
   };
 }
 

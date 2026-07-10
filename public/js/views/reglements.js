@@ -247,7 +247,7 @@ export async function printRecu(id) {
       ${row('Identifiant du bien', `<span style="font-family:monospace">${escapeHtml(r.property_code || '—')}</span>`)}
       ${row('Type de bien', escapeHtml(r.type_construction || '—'))}
       ${row('Désignation', escapeHtml(r.designation || '—'))}
-      ${row('Coût du loyer', fmt.money(r.cout_loyer))}
+      ${row('Loyer mensuel du locataire', fmt.money(r.subscription_loyer || r.montant_a_payer))}
     </table>
     <table class="kv">
       <tr class="montant-fort"><td class="k"><b>Montant payé par le locataire</b></td><td class="v">${fmt.money(r.montant_paye)}</td></tr>

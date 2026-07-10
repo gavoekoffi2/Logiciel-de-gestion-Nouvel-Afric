@@ -109,7 +109,7 @@ export async function render() {
       size: 'lg',
       fields: [
         { name: 'property_id', label: 'Bien (maison)', type: 'select', required: true,
-          options: props.map((p) => ({ value: p.id, label: `${p.code} — ${fmt.money(p.cout_loyer)}` })) },
+          options: props.map((p) => ({ value: p.id, label: `${p.code} — ${p.designation || p.type_construction || 'Bien'}` })) },
         { name: 'tenant_id', label: 'Locataire', type: 'select', required: true,
           options: tenants.map((t) => ({ value: t.id, label: t.nom_prenoms })) },
         { name: 'date_souscription', label: 'Date de souscription', type: 'date' },
@@ -132,14 +132,14 @@ export async function render() {
       values,
       onChange: (v, changed, set) => {
         if (changed === 'property_id') {
-          const p = propMap[String(v.property_id)];
-          if (p) { set('montant_loyer', p.cout_loyer); v.montant_loyer = p.cout_loyer; }
+          set('montant_loyer', '');
+          v.montant_loyer = '';
         }
         if (changed === 'tenant_id') {
           applyTenantFees(tenantMap[String(v.tenant_id)], set);
         }
         const loyer = Number(v.montant_loyer) || 0;
-        if (!row && changed === 'property_id') {
+        if (!row && (changed === 'montant_loyer' || changed === 'nombre_mois_caution' || changed === 'nombre_mois_avance' || changed === 'nombre_mois_garantie')) {
           set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
           set('montant_avance', (Number(v.nombre_mois_avance) || 0) * loyer);
           set('montant_garantie', (Number(v.nombre_mois_garantie) || 0) * loyer);

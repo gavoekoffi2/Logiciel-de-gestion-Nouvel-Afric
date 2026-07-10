@@ -52,7 +52,7 @@ export async function render() {
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
             <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Propriétaire</div><b>${escapeHtml(r.owner_nom || '—')}</b></div>
-            <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Loyer</div><b>${fmt.money(r.cout_loyer)}</b></div>
+            <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Loyers</div><b>Par locataire</b></div>
             <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Portes / apparts</div><b>${fmt.int(r.nombre_porte || 0)}</b></div>
             <div style="background:#f8fafc;border-radius:10px;padding:9px"><div class="muted">Commission</div><b>${fmt.int(r.part_commission || 0)} %</b></div>
           </div>
@@ -84,7 +84,6 @@ export async function render() {
           options: owners.map((o) => ({ value: o.id, label: o.nom_prenoms })) },
         { name: 'type_construction', label: 'Type de bien', type: 'select', required: true, options: TYPES },
         { name: 'designation', label: 'Désignation', required: true, col: 2, placeholder: 'ex. Appartement meublé, studio, magasin…' },
-        { name: 'cout_loyer', label: 'Coût du loyer (mensuel)', type: 'number', required: true, min: 0, step: 1000 },
         { name: 'nombre_porte', label: "Nombre d'appartement(s)", type: 'number', min: 0 },
         { name: 'part_commission', label: 'Part commission (%)', type: 'number', min: 0, max: 100, hint: 'Pourcentage perçu par l’agence (≤ 100).' },
         { name: 'ville', label: 'Ville' },
@@ -92,7 +91,7 @@ export async function render() {
         { name: 'quartier', label: 'Quartier' },
         { name: 'observation', label: 'Observation', type: 'textarea' },
       ],
-      values: row || { part_commission: 0, ville: 'LOMÉ' },
+      values: row || { part_commission: 0, ville: 'LOMÉ', cout_loyer: 0 },
       onSubmit: async (v) => {
         if (row) await api.put('/api/properties/' + row.id, v);
         else await api.post('/api/properties', v);

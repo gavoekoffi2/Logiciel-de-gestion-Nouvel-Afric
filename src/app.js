@@ -54,9 +54,18 @@ app.get('/api/branding', async (req, res) => {
     if (agence) {
       const { normalizeCompanyName } = require('./companyPolicy');
       const wanted = normalizeCompanyName(agence).replace(/\s+/g, '-');
-      if (wanted) {
+      const aliases = {
+        'nouvel-afric': 'nouvel-afrik',
+        'nouvelle-afrique': 'nouvel-afrik',
+        'nouvelles-afrique': 'nouvel-afrik',
+        'nouvel-afrique': 'nouvel-afrik',
+        'nouvelles-afriq': 'nouvel-afrik',
+        'nouvelle-afriq': 'nouvel-afrik',
+      };
+      const targetSlug = aliases[wanted] || wanted;
+      if (targetSlug) {
         const rows = await db.prepare('SELECT nom, logo FROM companies').all();
-        const match = rows.find((c) => normalizeCompanyName(c.nom).replace(/\s+/g, '-') === wanted);
+        const match = rows.find((c) => normalizeCompanyName(c.nom).replace(/\s+/g, '-') === targetSlug);
         if (match) return res.json({ entreprise: match.nom, logo: match.logo || null, agence: true });
       }
     }

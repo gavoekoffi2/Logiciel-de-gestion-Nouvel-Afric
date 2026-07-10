@@ -32,6 +32,32 @@ function displayFees(raw) {
   return escapeHtml(raw);
 }
 
+const FEE_LABELS = ['Gardiennage', 'Entretien', 'Eau', 'WC', 'Ordures', 'Nettoyage', 'Sécurité'];
+function tenantFeeFields() {
+  return [
+    ...FEE_LABELS.map((label) => ({ name: `fee_${label}`, label: `${label} — montant`, type: 'number', min: 0, step: 500 })),
+    { name: 'fee_autre_label', label: 'Autre frais — libellé' },
+    { name: 'fee_autre_montant', label: 'Autre frais — montant', type: 'number', min: 0, step: 500 },
+    { name: 'montant_autre_frais', label: 'Total autres frais', type: 'number', readonly: true },
+  ];
+}
+function collectFees(v) {
+  const fees = [];
+  FEE_LABELS.forEach((label) => {
+    const montant = Number(v[`fee_${label}`]) || 0;
+    if (montant > 0) fees.push({ libelle: label, montant });
+  });
+  const otherLabel = String(v.fee_autre_label || '').trim();
+  const otherAmount = Number(v.fee_autre_montant) || 0;
+  if (otherLabel && otherAmount > 0) fees.push({ libelle: otherLabel, montant: otherAmount });
+  return fees;
+}
+function feesTotal(v) { return collectFees(v).reduce((a, f) => a + f.montant, 0); }
+function serializeFees(v) {
+  const fees = collectFees(v);
+  return { autre_frais: fees.length ? JSON.stringify(fees) : '', montant_autre_frais: fees.reduce((a, f) => a + f.montant, 0) };
+}
+
 // Premier mois encore impaye (pour pre-remplir l'encaissement).
 function nextUnpaid(s) {
   return (s.echeancier || []).find((m) => m.reste > 0) || null;
@@ -119,83 +145,53 @@ export async function render() {
   }
 
   async function openAddTenants() {
-    const tenants = await api.get('/api/tenants');
-    const activeIds = new Set(actifs.map((s) => Number(s.tenant_id)));
-    const available = tenants.filter((t) => !activeIds.has(Number(t.id)));
-    if (!available.length) {
-      toast('Aucun locataire disponible à ajouter dans cette maison.', 'error');
-      return;
-    }
-    const rows = available.map((t) => `
-      <tr>
-        <td style="width:34px"><input type="checkbox" name="tenant" value="${t.id}" /></td>
-        <td><b>${escapeHtml(t.nom_prenoms)}</b><br><span class="muted">${escapeHtml(t.contact || '—')}</span></td>
-        <td><input type="number" name="loyer_${t.id}" min="1" step="1000" value="${Number(p.cout_loyer) || 0}" style="width:130px" /></td>
-        <td><input type="number" name="caution_${t.id}" min="0" step="1000" value="0" style="width:130px" /></td>
-        <td><input type="number" name="avance_${t.id}" min="0" step="1000" value="0" style="width:130px" /></td>
-        <td><input type="number" name="garantie_${t.id}" min="0" step="1000" value="0" style="width:130px" /></td>
-      </tr>`).join('');
-    const { modal, close } = openModal(`
-      <div class="modal-head"><h3>Ajouter des locataires dans cette maison</h3><button class="close" data-close>&times;</button></div>
-      <form id="batchTenantForm">
-        <div class="modal-body">
-          <div id="batchError" class="alert alert-error" style="display:none"></div>
-          <div class="form-grid" style="margin-bottom:14px">
-            <div class="field"><label>Date de souscription</label><input type="date" name="date_souscription" value="${fmt.today()}" /></div>
-            <div class="field"><label>Date d’entrée</label><input type="date" name="date_entree" value="${fmt.today()}" required /></div>
-            <div class="field"><label>Date début de paiement</label><input type="date" name="date_debut_paiement" value="${fmt.today()}" required /></div>
-            <div class="field"><label>Mois de caution</label><input type="number" name="nombre_mois_caution" min="0" value="0" /></div>
-            <div class="field"><label>Mois d’avance</label><input type="number" name="nombre_mois_avance" min="0" value="0" /></div>
-            <div class="field"><label>Mois de garantie</label><input type="number" name="nombre_mois_garantie" min="0" value="0" /></div>
-          </div>
-          <div class="hint" style="margin-bottom:10px">Cochez les locataires à affecter. Saisissez librement le loyer, la caution, l’avance et la garantie pour chaque locataire.</div>
-          <div class="table-wrap"><table class="data"><thead><tr><th></th><th>Locataire</th><th class="num">Loyer</th><th class="num">Caution</th><th class="num">Avance</th><th class="num">Garantie</th></tr></thead><tbody>${rows}</tbody></table></div>
-        </div>
-        <div class="modal-foot">
-          <button type="button" class="btn btn-ghost" data-close>Annuler</button>
-          <button type="submit" class="btn btn-primary">Ajouter les locataires</button>
-        </div>
-      </form>`, { size: 'lg' });
-    modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = close; });
-    modal.querySelector('#batchTenantForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const form = e.currentTarget;
-      const selected = [...form.querySelectorAll('input[name="tenant"]:checked')];
-      const errBox = modal.querySelector('#batchError');
-      errBox.style.display = 'none';
-      if (!selected.length) {
-        errBox.textContent = 'Veuillez sélectionner au moins un locataire.';
-        errBox.style.display = 'block';
-        return;
-      }
-      const tenantsPayload = selected.map((input) => {
-        const tenantId = Number(input.value);
-        return {
-          tenant_id: tenantId,
-          montant_loyer: Number(form.elements[`loyer_${tenantId}`].value) || 0,
-          montant_caution: Number(form.elements[`caution_${tenantId}`].value) || 0,
-          montant_avance: Number(form.elements[`avance_${tenantId}`].value) || 0,
-          montant_garantie: Number(form.elements[`garantie_${tenantId}`].value) || 0,
-        };
-      });
-      try {
-        await api.post('/api/properties/' + p.id + '/tenants', {
-          date_souscription: form.elements.date_souscription.value,
-          date_entree: form.elements.date_entree.value,
-          date_debut_paiement: form.elements.date_debut_paiement.value,
-          nombre_mois_caution: Number(form.elements.nombre_mois_caution.value) || 0,
-          nombre_mois_avance: Number(form.elements.nombre_mois_avance.value) || 0,
-          nombre_mois_garantie: Number(form.elements.nombre_mois_garantie.value) || 0,
-          tenants: tenantsPayload,
+    formModal({
+      title: 'Ajouter un locataire dans ce bien',
+      size: 'lg',
+      submitLabel: 'Ajouter le locataire au bien',
+      fields: [
+        { name: 'nom_prenoms', label: 'Nom et prénoms', required: true, col: 2 },
+        { name: 'contact', label: 'Contact (téléphone)', required: true },
+        { name: 'email', label: 'Email' },
+        { name: 'adresse', label: 'Adresse', type: 'textarea' },
+        { name: 'montant_loyer', label: 'Loyer mensuel du locataire', type: 'number', required: true, min: 1, step: 1000, hint: 'Montant propre à ce locataire dans ce bien.' },
+        { name: 'date_souscription', label: 'Date de souscription', type: 'date' },
+        { name: 'date_entree', label: 'Date d’entrée', type: 'date', required: true },
+        { name: 'date_debut_paiement', label: 'Date début de paiement', type: 'date', required: true },
+        { name: 'nombre_mois_caution', label: 'Nombre de mois de caution', type: 'number', min: 0 },
+        { name: 'montant_caution', label: 'Montant caution', type: 'number', readonly: true },
+        { name: 'nombre_mois_garantie', label: 'Nombre de mois de garantie', type: 'number', min: 0 },
+        { name: 'montant_garantie', label: 'Montant garantie', type: 'number', readonly: true },
+        { name: 'nombre_mois_avance', label: 'Nombre de mois d’avance', type: 'number', min: 0 },
+        { name: 'montant_avance', label: 'Montant avance', type: 'number', readonly: true },
+        ...tenantFeeFields(),
+      ],
+      values: {
+        date_souscription: fmt.today(), date_entree: fmt.today(), date_debut_paiement: fmt.today(),
+        nombre_mois_caution: 2, nombre_mois_garantie: 0, nombre_mois_avance: 1,
+        montant_caution: 0, montant_garantie: 0, montant_avance: 0, montant_autre_frais: 0,
+      },
+      onChange: (v, changed, set) => {
+        const loyer = Number(v.montant_loyer) || 0;
+        set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
+        set('montant_garantie', (Number(v.nombre_mois_garantie) || 0) * loyer);
+        set('montant_avance', (Number(v.nombre_mois_avance) || 0) * loyer);
+        set('montant_autre_frais', feesTotal(v));
+      },
+      onSubmit: async (v) => {
+        const loyer = Number(v.montant_loyer) || 0;
+        if (loyer <= 0) throw new Error('Veuillez saisir le loyer mensuel de ce locataire.');
+        await api.post('/api/tenants', {
+          ...v,
+          ...serializeFees(v),
+          property_id: p.id,
+          caution: Number(v.montant_caution) || 0,
+          statut: 'Active',
         });
-        close();
-        toast(selected.length + ' locataire(s) ajouté(s) à la maison.');
+        toast('Locataire ajouté directement dans ce bien.');
         render();
-      } catch (err) {
-        errBox.textContent = err.message || 'Erreur';
-        errBox.style.display = 'block';
-      }
-    };
+      },
+    });
   }
 
   function renderSub(s) {
@@ -283,7 +279,7 @@ export async function render() {
             <div class="muted" style="font-size:13px">Code : <span style="font-family:monospace;font-weight:800;color:#0f172a">${escapeHtml(p.code)}</span></div>
           </div>
           <div style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-primary btn-sm" id="addTenantsTop">${icon('plus', 15)} Ajouter des locataires</button>
+            <button class="btn btn-primary btn-sm" id="addTenantsTop">${icon('plus', 15)} Ajouter un locataire</button>
             ${badge(p.statut, p.statut === 'Occupé' ? 'amber' : 'green')}
           </div>
         </div>
@@ -304,7 +300,7 @@ export async function render() {
           ${infoLine('Désignation', escapeHtml(p.designation || '—'))}
           ${infoLine('Type / construction', escapeHtml(p.type_construction || '—'))}
           ${infoLine("Nombre d'appartement(s)", fmt.int(p.nombre_porte || 0))}
-          ${infoLine('Loyer mensuel', fmt.money(p.cout_loyer))}
+          ${infoLine('Loyer mensuel', 'Défini par locataire')}
           ${infoLine('Commission agence', `${fmt.int(p.part_commission || 0)} %`)}
           ${infoLine('Localisation', escapeHtml(locationText))}
           ${infoLine('Observation', escapeHtml(p.observation || '—'))}
@@ -321,7 +317,7 @@ export async function render() {
 
       ${sectionTitle('Locataires, baux et paiements attendus', 'Chaque locataire lié à ce bien, avec son bail, son échéancier et ses retards.')}
       <div style="display:flex;justify-content:flex-end;margin:-4px 0 12px">
-        <button class="btn btn-primary btn-sm" id="addTenants">${icon('plus', 15)} Ajouter des locataires</button>
+        <button class="btn btn-primary btn-sm" id="addTenants">${icon('plus', 15)} Ajouter un locataire</button>
       </div>
       <div id="subs"></div>
 

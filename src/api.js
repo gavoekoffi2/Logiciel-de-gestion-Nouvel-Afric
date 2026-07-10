@@ -65,8 +65,8 @@ async function codeExists(table, code) {
   return !!(await db.prepare(`SELECT 1 FROM ${table} WHERE code = ?`).get(code));
 }
 
-async function genPropertyCode(type, cout, dateStr) {
-  const base = `${typeCode(type)}_C${toInt(cout)}_M${dateCode(dateStr)}`;
+async function genPropertyCode(type, dateStr) {
+  const base = `${typeCode(type)}_M${dateCode(dateStr)}`;
   let code;
   do { code = `${base}A${rand()}`; } while (await codeExists('properties', code));
   return code;
@@ -244,6 +244,17 @@ router.post('/tenants', wrap(async (req, res) => {
   const p = personPayload(req.body);
   const err = await validatePerson(p, 'tenants', cid, 0, 'locataire');
   if (err) return res.status(400).json({ error: err });
+
+  // Si un bien est choisi au moment d'enregistrer le locataire, on valide le
+  // bien et le loyer avant de créer la fiche, afin d'éviter un locataire orphelin.
+  const propertyId = toInt(req.body.property_id);
+  let prop = null;
+  if (propertyId) {
+    prop = await db.prepare('SELECT * FROM properties WHERE id = ? AND company_id = ?').get(propertyId, cid);
+    if (!prop) return res.status(400).json({ error: 'Bien introuvable.' });
+    if (!toInt(req.body.montant_loyer)) return res.status(400).json({ error: 'Le montant du loyer est requis.' });
+  }
+
   const info = await db.prepare(
     'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution, autre_frais, montant_autre_frais) VALUES (?,?,?,?,?,?,?,?)'
   ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), clean(req.body.autre_frais), toInt(req.body.montant_autre_frais));
@@ -252,11 +263,8 @@ router.post('/tenants', wrap(async (req, res) => {
 
   // Si un bien est choisi au moment d'enregistrer le locataire, on cree aussi
   // la souscription (le bail) qui relie ce locataire a ce bien.
-  const propertyId = toInt(req.body.property_id);
   if (propertyId) {
-    const prop = await db.prepare('SELECT * FROM properties WHERE id = ? AND company_id = ?').get(propertyId, cid);
-    if (!prop) return res.status(400).json({ error: 'Bien introuvable.' });
-    const montantLoyer = toInt(req.body.montant_loyer) || toInt(prop.cout_loyer);
+    const montantLoyer = toInt(req.body.montant_loyer);
     const nbCaution = toInt(req.body.nombre_mois_caution);
     const nbAvance = toInt(req.body.nombre_mois_avance);
     const nbGarantie = toInt(req.body.nombre_mois_garantie);
@@ -395,7 +403,6 @@ async function validateProperty(p, companyId) {
   if (!own) return 'Propriétaire introuvable.';
   if (!p.type_construction) return 'Veuillez sélectionner le type de bien.';
   if (!p.designation) return 'Veuillez saisir la désignation du bien.';
-  if (!p.cout_loyer) return 'Veuillez saisir le coût du loyer.';
   if (p.part_commission > 100) return 'La part de commission doit être inférieure ou égale à 100.';
   return null;
 }
@@ -405,7 +412,7 @@ router.post('/properties', wrap(async (req, res) => {
   const p = propertyPayload(req.body);
   const err = await validateProperty(p, cid);
   if (err) return res.status(400).json({ error: err });
-  const code = await genPropertyCode(p.type_construction, p.cout_loyer, req.body.date);
+  const code = await genPropertyCode(p.type_construction, req.body.date);
   const info = await db.prepare(
     `INSERT INTO properties
      (company_id, code, owner_id, type_construction, nombre_piece, designation, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
@@ -515,9 +522,9 @@ async function validateSubscription(s, companyId, excludeId = 0) {
   if (s.statut === 'Active') {
     const dup = await db.prepare(
       `SELECT 1 FROM subscriptions
-       WHERE company_id = ? AND property_id = ? AND tenant_id = ? AND statut = 'Active' AND id <> ?`
-    ).get(companyId, s.property_id, s.tenant_id, excludeId || 0);
-    if (dup) return 'Ce locataire est déjà actif dans cette maison.';
+       WHERE company_id = ? AND tenant_id = ? AND statut = 'Active' AND id <> ?`
+    ).get(companyId, s.tenant_id, excludeId || 0);
+    if (dup) return 'Ce locataire est déjà actif dans un bien. Désactivez d’abord son ancien bail avant de l’ajouter ailleurs.';
   }
   return null;
 }
@@ -608,7 +615,7 @@ router.post('/properties/:id/tenants', wrap(async (req, res) => {
     if (!tenantId) return res.status(400).json({ error: 'Un locataire sélectionné est invalide.' });
     if (seen.has(tenantId)) return res.status(400).json({ error: 'Un même locataire ne peut pas être ajouté deux fois dans la même opération.' });
     seen.add(tenantId);
-    const montantLoyer = toInt(line && line.montant_loyer) || toInt(prop.cout_loyer);
+    const montantLoyer = toInt(line && line.montant_loyer);
     const payload = subscriptionPayload({
       ...base,
       tenant_id: tenantId,
@@ -864,7 +871,7 @@ router.get('/recouvrement', wrap(async (req, res) => {
 const PAY_SELECT = `
   SELECT r.*, p.code AS property_code, p.type_construction, p.nombre_piece, p.designation, p.cout_loyer,
          t.nom_prenoms AS tenant_nom, t.contact AS tenant_contact,
-         s.code AS subscription_code
+         s.code AS subscription_code, s.montant_loyer AS subscription_loyer
   FROM payments r
   LEFT JOIN properties p ON p.id = r.property_id
   LEFT JOIN tenants t ON t.id = r.tenant_id

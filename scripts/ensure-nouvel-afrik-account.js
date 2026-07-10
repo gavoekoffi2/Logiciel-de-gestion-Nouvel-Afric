@@ -19,7 +19,7 @@ const ADMIN_EMAIL = (process.env.NOUVEL_AFRIK_ADMIN_EMAIL || 'admin@nouvelafrik.
 const ADMIN_PASSWORD = String(process.env.NOUVEL_AFRIK_ADMIN_PASSWORD || '').trim();
 const COMPANY_NAME = (process.env.NOUVEL_AFRIK_COMPANY_NAME || 'Nouvel Afrik').trim();
 const ADMIN_NAME = (process.env.NOUVEL_AFRIK_ADMIN_NAME || 'Administrateur Nouvel Afrik').trim();
-const LOGO = process.env.NOUVEL_AFRIK_LOGO || '/assets/logo.svg';
+const LOGO = process.env.NOUVEL_AFRIK_LOGO || '/assets/nouvel-afrik-logo.jpg';
 
 function normalize(value) {
   return String(value || '')

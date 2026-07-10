@@ -37,7 +37,7 @@ const ROUTES = {
   parametres:    { label: 'Paramètres',      icon: 'settings',      mod: parametres, adminOnly: true },
   journal:       { label: 'Journal d’activité', icon: 'clock',      mod: journal, adminOnly: true },
 };
-const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'quartiers', 'locataires', 'souscriptions', 'reglements', 'recouvrement', 'reversements'];
+const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'quartiers', 'reversements'];
 
 // Routes du super-administrateur.
 const SUPER_ROUTES = {

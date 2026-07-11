@@ -37,11 +37,10 @@ const ROUTES = {
   parametres:    { label: 'Paramètres',      icon: 'settings',      mod: parametres, adminOnly: true },
   journal:       { label: 'Journal d’activité', icon: 'clock',      mod: journal, adminOnly: true },
 };
-// Tous les comptes d'entreprise (admin, assistant, secrétaire) doivent pouvoir
-// travailler au quotidien : enregistrer propriétaires, biens, locataires,
-// souscriptions, règlements, recouvrement et reversements. Les routes sensibles
-// (paramètres, utilisateurs, sauvegardes, journal) restent réservées à l'admin.
-const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'locataires', 'souscriptions', 'reglements', 'recouvrement', 'quartiers', 'reversements'];
+// Le menu reste volontairement simple : les opérations courantes des locataires
+// (ajout dans un bien, bail, encaissement/règlement, recouvrement, historique)
+// se font depuis la fiche du bien, pas dans des pages séparées.
+const NAV_ORDER = ['dashboard', 'proprietaires', 'maisons', 'quartiers', 'reversements'];
 
 // Routes du super-administrateur.
 const SUPER_ROUTES = {

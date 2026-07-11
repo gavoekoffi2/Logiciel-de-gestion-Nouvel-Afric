@@ -121,11 +121,19 @@ test('assistant and secretary can both create business records at the same time'
   });
 });
 
-test('operational navigation is visible to non-admin company users', () => {
+test('operational navigation keeps tenant and payment work centralized inside properties', () => {
   const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'app.js'), 'utf8');
   const navOrder = appJs.match(/const NAV_ORDER = \[([^\]]+)\]/);
   assert.ok(navOrder, 'NAV_ORDER should be declared');
-  for (const key of ['proprietaires', 'maisons', 'locataires', 'souscriptions', 'reglements', 'recouvrement', 'reversements']) {
+  for (const key of ['proprietaires', 'maisons', 'quartiers', 'reversements']) {
     assert.match(navOrder[1], new RegExp(`'${key}'`));
   }
+  for (const hiddenKey of ['locataires', 'souscriptions', 'reglements', 'recouvrement']) {
+    assert.doesNotMatch(navOrder[1], new RegExp(`'${hiddenKey}'`));
+  }
+
+  const propertyDetail = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'views', 'maisonDetail.js'), 'utf8');
+  assert.match(propertyDetail, /Ajouter un locataire dans ce bien/);
+  assert.match(propertyDetail, /Encaisser un loyer/);
+  assert.match(propertyDetail, /Historique complet des paiements du bien/);
 });

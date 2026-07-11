@@ -4,9 +4,9 @@ const FEE_LABELS = ['Gardiennage', 'Entretien', 'Eau', 'WC', 'Ordures', 'Nettoya
 
 function feeFields() {
   return [
-    ...FEE_LABELS.map((label) => ({ name: `fee_${label}`, label: `${label} — montant`, type: 'number', min: 0, step: 500 })),
+    ...FEE_LABELS.map((label) => ({ name: `fee_${label}`, label: `${label} — montant`, type: 'number', min: 0, step: 1 })),
     { name: 'fee_autre_label', label: 'Autre frais — libellé' },
-    { name: 'fee_autre_montant', label: 'Autre frais — montant', type: 'number', min: 0, step: 500 },
+    { name: 'fee_autre_montant', label: 'Autre frais — montant', type: 'number', min: 0, step: 1 },
     { name: 'montant_autre_frais', label: 'Total autres frais', type: 'number', readonly: true },
     { name: 'autre_frais', label: 'Autres frais JSON', type: 'hidden' },
   ];
@@ -97,7 +97,7 @@ export async function render() {
       { name: 'contact', label: 'Contact (téléphone)', required: true },
       { name: 'email', label: 'Email' },
       { name: 'adresse', label: 'Adresse', type: 'textarea' },
-      { name: 'caution', label: 'Caution enregistrée sur la fiche locataire', type: 'number', min: 0, step: 1000 },
+      { name: 'caution', label: 'Caution enregistrée sur la fiche locataire', type: 'number', min: 0, step: 1 },
       ...feeFields(),
     ];
     if (!row) {

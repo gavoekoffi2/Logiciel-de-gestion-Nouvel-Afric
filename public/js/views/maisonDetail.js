@@ -35,9 +35,9 @@ function displayFees(raw) {
 const FEE_LABELS = ['Gardiennage', 'Entretien', 'Eau', 'WC', 'Ordures', 'Nettoyage', 'Sécurité'];
 function tenantFeeFields() {
   return [
-    ...FEE_LABELS.map((label) => ({ name: `fee_${label}`, label: `${label} — montant`, type: 'number', min: 0, step: 500 })),
+    ...FEE_LABELS.map((label) => ({ name: `fee_${label}`, label: `${label} — montant`, type: 'number', min: 0, step: 1 })),
     { name: 'fee_autre_label', label: 'Autre frais — libellé' },
-    { name: 'fee_autre_montant', label: 'Autre frais — montant', type: 'number', min: 0, step: 500 },
+    { name: 'fee_autre_montant', label: 'Autre frais — montant', type: 'number', min: 0, step: 1 },
     { name: 'montant_autre_frais', label: 'Total autres frais', type: 'number', readonly: true },
   ];
 }
@@ -120,7 +120,7 @@ export async function render() {
       fields: [
         { name: 'mois', label: 'Mois', type: 'select', options: MOIS, required: true },
         { name: 'annee', label: 'Année', type: 'number', required: true },
-        { name: 'montant', label: 'Montant', type: 'number', min: 0, step: 1000, required: true },
+        { name: 'montant', label: 'Montant', type: 'number', min: 0, step: 1, required: true },
         { name: 'description', label: 'Description', type: 'textarea', col: 2, placeholder: 'Ex. plomberie, peinture, serrure, rénovation…' },
       ],
       values: { mois: MOIS[new Date().getMonth()], annee: new Date().getFullYear() },
@@ -154,7 +154,7 @@ export async function render() {
         { name: 'contact', label: 'Contact (téléphone)', required: true },
         { name: 'email', label: 'Email' },
         { name: 'adresse', label: 'Adresse', type: 'textarea' },
-        { name: 'montant_loyer', label: 'Loyer mensuel du locataire', type: 'number', required: true, min: 1, step: 1000, hint: 'Montant propre à ce locataire dans ce bien.' },
+        { name: 'montant_loyer', label: 'Loyer mensuel du locataire', type: 'number', required: true, min: 1, step: 1, hint: 'Montant propre à ce locataire dans ce bien.' },
         { name: 'date_souscription', label: 'Date de souscription', type: 'date' },
         { name: 'date_entree', label: 'Date d’entrée', type: 'date', required: true },
         { name: 'date_debut_paiement', label: 'Date début de paiement', type: 'date', required: true },

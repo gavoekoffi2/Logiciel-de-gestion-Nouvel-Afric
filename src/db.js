@@ -61,15 +61,15 @@ const db = {
   prepare(sql) {
     return {
       async get(...params) {
-        const r = await client.execute(buildStmt(sql, params));
+        const r = await executeWithRetry(buildStmt(sql, params));
         return r.rows[0];
       },
       async all(...params) {
-        const r = await client.execute(buildStmt(sql, params));
+        const r = await executeWithRetry(buildStmt(sql, params));
         return r.rows;
       },
       async run(...params) {
-        const r = await client.execute(buildStmt(sql, params));
+        const r = await executeWithRetry(buildStmt(sql, params));
         return {
           lastInsertRowid: r.lastInsertRowid == null ? undefined : Number(r.lastInsertRowid),
           changes: r.rowsAffected,
@@ -78,6 +78,28 @@ const db = {
     };
   },
 };
+
+function isTransientDatabaseLock(err) {
+  const msg = String((err && (err.code || err.message)) || err || '').toLowerCase();
+  return msg.includes('sqlite_busy') || msg.includes('database is locked') || msg.includes('database locked') || msg.includes('busy');
+}
+
+async function executeWithRetry(statement, attempts = 6) {
+  let lastErr;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await client.execute(statement);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientDatabaseLock(err) || i === attempts - 1) break;
+      // Quand deux utilisateurs valident en même temps, SQLite/libSQL peut
+      // refuser temporairement une écriture. On attend quelques millisecondes
+      // puis on rejoue la requête au lieu de bloquer l'utilisateur.
+      await new Promise((resolve) => setTimeout(resolve, 25 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
 
 // ---------------------------------------------------------------------------
 // Schema

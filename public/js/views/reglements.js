@@ -2,6 +2,7 @@ import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, 
 
 const anneeCourante = new Date().getFullYear();
 const moisCourant = MOIS[new Date().getMonth()];
+const PAYMENT_TOLERANCE = 1;
 
 function parseMonthText(txt, year) {
   return String(txt || '').split(',').map((m) => m.trim()).filter(Boolean).map((mois) => ({ mois, annee: Number(year) || anneeCourante }));
@@ -131,7 +132,8 @@ export async function render() {
           set('montant_a_payer', totalDue);
           v.montant_a_payer = totalDue;
         }
-        const reste = Math.max(0, (Number(v.montant_a_payer) || 0) - (Number(v.montant_paye) || 0));
+        const diff = (Number(v.montant_a_payer) || 0) - (Number(v.montant_paye) || 0);
+        const reste = diff > PAYMENT_TOLERANCE ? diff : 0;
         set('reste_a_payer', reste);
       },
       onSubmit: async (v) => {

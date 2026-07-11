@@ -129,8 +129,10 @@ async function createNouvelAfrikFixture(baseUrl) {
   assert.equal(secretaryLogin.res.status, 200, JSON.stringify(secretaryLogin.data));
 
   return {
+    adminCookie,
     assistantCookie: cookieFrom(assistantLogin.res),
     secretaryCookie: cookieFrom(secretaryLogin.res),
+    property: property.data,
     subscriptions: batch.data.subscriptions,
   };
 }
@@ -166,9 +168,9 @@ test('assistant and secretary can validate rent payments at the same time', asyn
   });
 });
 
-test('API accepts a one-franc short payment as sold without asking users to add 1', async () => {
+test('API and property detail accept a one-franc short payment as sold without asking users to add 1', async () => {
   await withServer(async (baseUrl) => {
-    const { secretaryCookie, subscriptions } = await createNouvelAfrikFixture(baseUrl);
+    const { secretaryCookie, property, subscriptions } = await createNouvelAfrikFixture(baseUrl);
     const sub = subscriptions[0];
     const payment = await request(baseUrl, 'POST', '/api/payments', {
       subscription_id: sub.id,
@@ -184,5 +186,36 @@ test('API accepts a one-franc short payment as sold without asking users to add 
     assert.equal(payment.data.montant_paye, sub.montant_loyer - 1);
     assert.equal(payment.data.reste_a_payer, 0);
     assert.equal(payment.data.statut, 'Soldé');
+
+    const detail = await request(baseUrl, 'GET', `/api/properties/${property.id}/details`, null, secretaryCookie);
+    assert.equal(detail.res.status, 200, JSON.stringify(detail.data));
+    const updated = detail.data.subscriptions.find((s) => s.id === sub.id);
+    const march = updated.echeancier.find((m) => m.mois === 'Mars' && m.annee === 2026);
+    assert.ok(march, 'March 2026 should appear in the property schedule');
+    assert.equal(march.reste, 0);
+    assert.equal(march.statut, 'Payé');
+  });
+});
+
+test('property deletion succeeds even when an active subscription exists', async () => {
+  await withServer(async (baseUrl) => {
+    const { adminCookie, property, subscriptions } = await createNouvelAfrikFixture(baseUrl);
+    const sub = subscriptions[0];
+
+    const deleted = await request(baseUrl, 'DELETE', `/api/properties/${property.id}`, null, adminCookie);
+    assert.equal(deleted.res.status, 200, JSON.stringify(deleted.data));
+    assert.equal(deleted.data.ok, true);
+
+    const detail = await request(baseUrl, 'GET', `/api/properties/${property.id}/details`, null, adminCookie);
+    assert.equal(detail.res.status, 404, JSON.stringify(detail.data));
+
+    const active = await request(baseUrl, 'GET', '/api/subscriptions/active', null, adminCookie);
+    assert.equal(active.res.status, 200, JSON.stringify(active.data));
+    assert.equal(active.data.some((s) => s.id === sub.id), false);
+
+    const archived = await request(baseUrl, 'GET', `/api/subscriptions/${sub.id}`, null, adminCookie);
+    assert.equal(archived.res.status, 200, JSON.stringify(archived.data));
+    assert.equal(archived.data.statut, 'Desactive');
+    assert.equal(archived.data.property_id, null);
   });
 });

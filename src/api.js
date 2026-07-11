@@ -29,6 +29,10 @@ const MOIS = [
   'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre',
 ];
 
+// Un écart d'arrondi de 1 FCFA ne doit jamais bloquer un paiement ni afficher
+// un reliquat artificiel dans l'échéancier du bien.
+const PAYMENT_TOLERANCE = 1;
+
 // ---------------------------------------------------------------------------
 // Outils
 // ---------------------------------------------------------------------------
@@ -443,9 +447,16 @@ router.put('/properties/:id', wrap(async (req, res) => {
 router.delete('/properties/:id', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
-  const sub = await db.prepare("SELECT 1 FROM subscriptions WHERE property_id = ? AND company_id = ? AND statut='Active'").get(id, cid);
-  if (sub) return res.status(400).json({ error: 'Impossible de supprimer : ce bien a une souscription active.' });
   const row = await db.prepare('SELECT code FROM properties WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!row) return res.status(404).json({ error: 'Bien introuvable.' });
+
+  // Le client veut pouvoir supprimer un bien même si un bail est encore actif.
+  // On conserve les historiques, mais on détache proprement les lignes liées :
+  // - les baux du bien sont désactivés et ne ressortent plus comme actifs ;
+  // - les règlements/reversements restent consultables dans l'historique global ;
+  // - les réparations du bien sont supprimées par la clé étrangère/cascade.
+  await db.prepare("UPDATE subscriptions SET statut = 'Desactive', property_id = NULL WHERE property_id = ? AND company_id = ?").run(id, cid);
+  await db.prepare('UPDATE payments SET property_id = NULL WHERE property_id = ? AND company_id = ?').run(id, cid);
   await db.prepare('DELETE FROM properties WHERE id = ? AND company_id = ?').run(id, cid);
   if (row) await logAction(req, 'Suppression', 'Bien', row.code);
   res.json({ ok: true });
@@ -694,8 +705,10 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     if (s.statut === 'Active' && s.date_debut_paiement) {
       echeancier = monthsUntilNow(s.date_debut_paiement).map((mm) => {
         const paye = paidBy[`${mm.annee}-${mm.mois}`] || 0;
-        const statut = (loyer > 0 && paye >= loyer) ? 'Payé' : (paye > 0 ? 'Partiel' : 'Impayé');
-        return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste: Math.max(0, loyer - paye), statut };
+        const diff = loyer - paye;
+        const reste = diff > PAYMENT_TOLERANCE ? diff : 0;
+        const statut = (loyer > 0 && reste === 0) ? 'Payé' : (paye > 0 ? 'Partiel' : 'Impayé');
+        return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, statut };
       });
     }
     const total_attendu = echeancier.reduce((a, m) => a + m.attendu, 0);

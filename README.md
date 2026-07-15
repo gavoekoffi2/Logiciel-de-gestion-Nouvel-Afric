@@ -18,9 +18,9 @@ mises à jour en temps réel.
 | **Tableau de bord** | Vue d'ensemble : nombre de propriétaires / locataires / biens, biens disponibles ou occupés, total des cautions, avances et loyers encaissés, recouvrement du mois en cours, impayés, derniers paiements. |
 | **Propriétaires** | Ajout, modification, suppression et recherche des propriétaires. |
 | **Maisons / Biens** | Gestion des biens (code généré automatiquement, type, nombre de pièces, loyer, localisation, commission, statut **Disponible / Occupé** calculé automatiquement). |
-| **Locataires** | Gestion des locataires. |
+| **Locataires** | Gestion des locataires. Dans la fiche d'un bien, on peut **ajouter un locataire** ou, quand un locataire **a quitté** le logement, le **retirer du bien** (le bail est clôturé, l'historique est conservé et le logement redevient disponible). Un bail clôturé peut ensuite être **supprimé définitivement** en cas d'erreur de saisie. |
 | **Souscriptions (baux)** | Mise en location d'un bien : calcul automatique de la **caution** (nb mois × loyer) et de l'**avance**, impression du **contrat de location**. |
-| **Règlements (loyers)** | Enregistrement des paiements (reste à payer et statut **Soldé / Non soldé** automatiques), **impression du reçu** (avec montant en toutes lettres), et **encaissement multiple** pour collecter en une seule fois les loyers du mois. |
+| **Règlements (loyers)** | Enregistrement des paiements (reste à payer et statut **Soldé / Non soldé** automatiques), **impression du reçu** (avec montant en toutes lettres), et **encaissement multiple** pour collecter en une seule fois les loyers du mois. Les loyers se paient **à terme échu** : on encaisse le loyer d'un mois **après** que celui-ci a été consommé (ex. le loyer de juin s'encaisse en juillet). Le **mois en cours** reste « À échoir » et n'est jamais compté comme impayé. |
 | **Paramètres** | Coordonnées de l'entreprise (affichées sur les reçus et contrats) et **gestion des utilisateurs**. |
 
 ### Plateforme multi-entreprises (abonnement annuel)

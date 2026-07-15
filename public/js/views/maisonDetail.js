@@ -103,7 +103,9 @@ export async function render() {
         mois_concerne: pm.mois || MOIS[new Date().getMonth()],
         annee_concernee: pm.annee || new Date().getFullYear(),
         montant_a_payer: loyer,
-        montant_paye: pm.reste != null ? pm.reste : loyer,
+        // Reste dû si le mois est partiellement/non payé, sinon le loyer plein
+        // (cas d'un encaissement anticipé d'un mois « à échoir »).
+        montant_paye: pm.reste ? pm.reste : loyer,
         date: fmt.today(),
       },
       onSubmit: async (v) => {
@@ -194,6 +196,32 @@ export async function render() {
     });
   }
 
+  // Le locataire a quitté le bien : on clôture le bail (historique conservé,
+  // logement de nouveau disponible).
+  async function departTenant(s) {
+    const ok = await confirmDialog({
+      title: 'Le locataire a quitté ce bien',
+      okLabel: 'Confirmer le départ',
+      message: `Confirmer que « ${s.tenant_nom || 'ce locataire'} » a quitté ce bien ?\n\nLe bail sera clôturé. L’historique des paiements reste conservé et le logement redevient disponible.`,
+    });
+    if (!ok) return;
+    await api.post('/api/subscriptions/' + s.id + '/depart', {});
+    toast('Locataire retiré du bien.');
+    render();
+  }
+
+  // Suppression définitive du bail (erreur de saisie, doublon…).
+  async function deleteSub(s) {
+    const ok = await confirmDialog({
+      title: 'Supprimer définitivement le bail', danger: true, okLabel: 'Supprimer',
+      message: `Supprimer définitivement le bail de « ${s.tenant_nom || 'ce locataire'} » (${s.code}) ?\n\nCette action est irréversible. À n’utiliser qu’en cas d’erreur de saisie.`,
+    });
+    if (!ok) return;
+    await api.del('/api/subscriptions/' + s.id);
+    toast('Bail supprimé.');
+    render();
+  }
+
   function renderSub(s) {
     const r = s.resume || { total_attendu: 0, total_paye: 0, reste: 0, mois_retard: 0 };
     const card = el('<div class="card card-pad" style="margin-bottom:14px;border-left:4px solid #2563eb"></div>');
@@ -234,6 +262,9 @@ export async function render() {
       const encBtn = el(`<button class="btn btn-accent btn-sm">${icon('collect', 15)} Encaisser un loyer</button>`);
       encBtn.onclick = () => openEncaisser(s, null);
       bar.appendChild(encBtn);
+      const departBtn = el(`<button class="btn btn-ghost btn-sm" style="color:#b45309">${icon('back', 15)} Le locataire a quitté</button>`);
+      departBtn.onclick = () => departTenant(s);
+      bar.appendChild(departBtn);
       card.appendChild(bar);
 
       card.appendChild(dataTable({
@@ -242,11 +273,11 @@ export async function render() {
           { label: 'Attendu', num: true, render: (m) => fmt.money(m.attendu) },
           { label: 'Payé', num: true, render: (m) => fmt.money(m.paye) },
           { label: 'Reste', num: true, render: (m) => (m.reste > 0 ? `<b style="color:#b91c1c">${fmt.money(m.reste)}</b>` : fmt.money(0)) },
-          { label: 'Statut', render: (m) => badge(m.statut, m.statut === 'Payé' ? 'green' : (m.statut === 'Partiel' ? 'amber' : 'red')) },
+          { label: 'Statut', render: (m) => badge(m.statut, m.statut === 'Payé' ? 'green' : (m.statut === 'Partiel' ? 'amber' : (m.statut === 'À échoir' ? 'gray' : 'red'))) },
         ],
         rows: s.echeancier || [],
         actions: [
-          { title: 'Encaisser ce mois', icon: 'collect', variant: 'btn-accent', show: (m) => m.reste > 0, onClick: (m) => openEncaisser(s, m) },
+          { title: 'Encaisser ce mois', icon: 'collect', variant: 'btn-accent', show: (m) => m.reste > 0 || !m.echu, onClick: (m) => openEncaisser(s, m) },
         ],
         empty: 'Aucune échéance.',
       }));
@@ -263,6 +294,15 @@ export async function render() {
       }));
     } else {
       card.appendChild(el('<p class="muted" style="margin:0">Aucun paiement enregistré.</p>'));
+    }
+
+    // Bail désactivé (locataire parti) : permettre la suppression définitive.
+    if (s.statut !== 'Active') {
+      const bar = el('<div style="display:flex;justify-content:flex-end;margin-top:10px"></div>');
+      const delBtn = el(`<button class="btn btn-ghost btn-sm" style="color:#b91c1c">${icon('trash', 15)} Supprimer définitivement le bail</button>`);
+      delBtn.onclick = () => deleteSub(s);
+      bar.appendChild(delBtn);
+      card.appendChild(bar);
     }
     return card;
   }
@@ -315,7 +355,7 @@ export async function render() {
         </div>
       </div>
 
-      ${sectionTitle('Locataires, baux et paiements attendus', 'Chaque locataire lié à ce bien, avec son bail, son échéancier et ses retards.')}
+      ${sectionTitle('Locataires, baux et paiements attendus', 'Chaque locataire lié à ce bien, avec son bail, son échéancier et ses retards. Le loyer se paie à terme échu : le mois en cours reste « À échoir » jusqu’à sa fin.')}
       <div style="display:flex;justify-content:flex-end;margin:-4px 0 12px">
         <button class="btn btn-primary btn-sm" id="addTenants">${icon('plus', 15)} Ajouter un locataire</button>
       </div>

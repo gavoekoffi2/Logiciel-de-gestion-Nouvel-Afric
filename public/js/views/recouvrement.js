@@ -12,7 +12,10 @@ function chip(label, value, danger) {
 const grid = (inner) => `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">${inner}</div>`;
 
 export async function render() {
-  const filtre = { mois: MOIS[new Date().getMonth()], annee: anneeCourante };
+  // Location a terme echu : par defaut, on presente le dernier mois exigible
+  // (le mois precedent), puisqu'on encaisse le loyer apres le mois consomme.
+  const moisEchu = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
+  const filtre = { mois: MOIS[moisEchu.getMonth()], annee: moisEchu.getFullYear() };
   const annees = [];
   for (let a = anneeCourante + 1; a >= anneeCourante - 6; a--) annees.push(a);
 

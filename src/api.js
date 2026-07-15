@@ -116,9 +116,16 @@ function monthsUntil(startYMD, ey, em) {
   }
   return out;
 }
-function monthsUntilNow(startYMD) {
-  const now = new Date();
-  return monthsUntil(startYMD, now.getFullYear(), now.getMonth() + 1);
+// Location A TERME ECHU : le loyer d'un mois n'est exigible qu'une fois le mois
+// entierement consomme. Le dernier mois exigible est donc le mois civil PRECEDENT
+// (ex. en juillet, on encaisse le loyer de juin). Renvoie { annee, mois } avec
+// mois en base 1 (1 = Janvier).
+function lastDueYearMonth(ref) {
+  const now = ref ? new Date(ref) : new Date();
+  let annee = now.getFullYear();
+  let mois = now.getMonth(); // mois courant en base 1 = getMonth()+1 ; le precedent = getMonth()
+  if (mois < 1) { mois = 12; annee -= 1; }
+  return { annee, mois };
 }
 
 // Roles possibles AU SEIN d'une entreprise (le super-admin est hors entreprise).
@@ -593,6 +600,20 @@ router.delete('/subscriptions/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Depart d'un locataire : le locataire a quitte le bien. On CLOT le bail
+// (statut « Desactive ») sans rien supprimer : l'historique des paiements et des
+// reversements reste consultable, et le logement redevient disponible s'il n'a
+// plus aucun locataire actif.
+router.post('/subscriptions/:id/depart', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const id = toInt(req.params.id);
+  const row = await db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(id, cid);
+  if (!row) return res.status(404).json({ error: 'Souscription introuvable.' });
+  await db.prepare("UPDATE subscriptions SET statut = 'Desactive' WHERE id = ? AND company_id = ?").run(id, cid);
+  await logAction(req, 'Modification', 'Souscription', `Départ du locataire — ${row.tenant_nom || ''} (${row.code})`);
+  res.json({ ok: true });
+}));
+
 // Ajout en lot de plusieurs locataires dans une maison. Chaque ligne crée un
 // bail actif avec son propre loyer mensuel, car deux locataires d'une même
 // maison peuvent payer des montants différents.
@@ -701,19 +722,31 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
 
     const loyer = s.montant_loyer || 0;
     // L'echeancier n'est calcule que pour les baux actifs (loyers attendus).
+    // Location a terme echu : on affiche aussi le mois EN COURS, mais marque
+    // « A echoir » — il n'est ni exigible ni compte comme impaye tant qu'il
+    // n'est pas termine.
     let echeancier = [];
     if (s.statut === 'Active' && s.date_debut_paiement) {
-      echeancier = monthsUntilNow(s.date_debut_paiement).map((mm) => {
+      const now = new Date();
+      const curY = now.getFullYear();
+      const curMi = now.getMonth() + 1; // mois courant en base 1
+      echeancier = monthsUntil(s.date_debut_paiement, curY, curMi).map((mm) => {
+        const mi = MOIS.indexOf(mm.mois) + 1;
+        const echu = mm.annee < curY || (mm.annee === curY && mi < curMi);
         const paye = paidBy[`${mm.annee}-${mm.mois}`] || 0;
         const diff = loyer - paye;
-        const reste = diff > PAYMENT_TOLERANCE ? diff : 0;
-        const statut = (loyer > 0 && reste === 0) ? 'Payé' : (paye > 0 ? 'Partiel' : 'Impayé');
-        return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, statut };
+        const resteReel = diff > PAYMENT_TOLERANCE ? diff : 0;
+        const reste = echu ? resteReel : 0; // seuls les mois echus sont exigibles
+        let statut;
+        if (loyer > 0 && resteReel === 0) statut = 'Payé';
+        else if (!echu) statut = paye > 0 ? 'Partiel' : 'À échoir';
+        else statut = paye > 0 ? 'Partiel' : 'Impayé';
+        return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, echu, statut };
       });
     }
-    const total_attendu = echeancier.reduce((a, m) => a + m.attendu, 0);
+    const total_attendu = echeancier.reduce((a, m) => a + (m.echu ? m.attendu : 0), 0);
     const reste = echeancier.reduce((a, m) => a + m.reste, 0);
-    const mois_retard = echeancier.filter((m) => m.reste > 0).length;
+    const mois_retard = echeancier.filter((m) => m.echu && m.reste > 0).length;
 
     s.paiements = pays;
     s.echeancier = echeancier;
@@ -795,9 +828,11 @@ router.delete('/repairs/:id', wrap(async (req, res) => {
 // ===========================================================================
 router.get('/recouvrement', wrap(async (req, res) => {
   const cid = req.companyId;
-  const now = new Date();
-  const moisSel = clean(req.query.mois) || MOIS[now.getMonth()];
-  const anneeSel = toInt(req.query.annee) || now.getFullYear();
+  // Par defaut, on presente le dernier mois EXIGIBLE (mois precedent), puisque
+  // les loyers se paient a terme echu.
+  const due = lastDueYearMonth();
+  const moisSel = clean(req.query.mois) || MOIS[due.mois - 1];
+  const anneeSel = toInt(req.query.annee) || due.annee;
   const emIndex = MOIS.indexOf(moisSel) + 1;
   if (emIndex < 1) return res.status(400).json({ error: 'Mois invalide.' });
 
@@ -1215,6 +1250,11 @@ router.get('/dashboard', wrap(async (req, res) => {
   const now = new Date();
   const moisCourant = MOIS[now.getMonth()];
   const anneeCourante = now.getFullYear();
+  // Location a terme echu : le mois que l'on encaisse actuellement est le mois
+  // PRECEDENT (ex. en juillet, on recouvre le loyer de juin).
+  const due = lastDueYearMonth();
+  const moisRecouvrement = MOIS[due.mois - 1];
+  const anneeRecouvrement = due.annee;
 
   const one = (sql, ...p) => db.prepare(sql).get(...p);
 
@@ -1231,7 +1271,7 @@ router.get('/dashboard', wrap(async (req, res) => {
     one('SELECT COALESCE(SUM(montant_avance),0) s FROM subscriptions WHERE company_id = ?', cid),
     one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE company_id = ?', cid),
     one("SELECT COALESCE(SUM(montant_loyer),0) s FROM subscriptions WHERE company_id = ? AND statut='Active'", cid),
-    one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE company_id = ? AND mois_concerne=? AND annee_concernee=?', cid, moisCourant, anneeCourante),
+    one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE company_id = ? AND mois_concerne=? AND annee_concernee=?', cid, moisRecouvrement, anneeRecouvrement),
     one("SELECT COUNT(*) n FROM payments WHERE company_id = ? AND statut='Non soldé'", cid),
     one("SELECT COALESCE(SUM(reste_a_payer),0) s FROM payments WHERE company_id = ? AND statut='Non soldé'", cid),
     one(`SELECT COALESCE(SUM(r.montant_paye - ROUND(r.montant_paye * COALESCE(p.part_commission,0) / 100.0)), 0) s
@@ -1246,6 +1286,8 @@ router.get('/dashboard', wrap(async (req, res) => {
   const data = {
     moisCourant,
     anneeCourante,
+    moisRecouvrement,
+    anneeRecouvrement,
     nb_proprietaires: proprietaires.n,
     nb_locataires: locataires.n,
     nb_maisons,

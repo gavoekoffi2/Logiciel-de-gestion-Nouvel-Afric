@@ -35,7 +35,8 @@ export async function render() {
 
       <div class="grid" style="grid-template-columns:1.1fr 1fr;align-items:start;margin-top:18px" id="bottomGrid">
         <div class="card card-pad">
-          <h3 style="font-size:15px;margin-bottom:6px">Recouvrement de ${escapeHtml(d.moisCourant)} ${d.anneeCourante}</h3>
+          <h3 style="font-size:15px;margin-bottom:6px">Recouvrement de ${escapeHtml(d.moisRecouvrement || d.moisCourant)} ${d.anneeRecouvrement || d.anneeCourante}</h3>
+          <div class="muted" style="font-size:12px;margin-bottom:4px">Loyers à terme échu : on encaisse actuellement le mois précédent.</div>
           <div style="display:flex;justify-content:space-between;font-size:13px;color:#475569;margin:10px 0 6px">
             <span>Encaissé : <b style="color:#15803d">${fmt.money(d.loyer_encaisse_mois)}</b></span>
             <span>Attendu : <b>${fmt.money(d.loyer_attendu)}</b></span>

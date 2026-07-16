@@ -2,6 +2,11 @@ import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, 
 
 const anneeCourante = new Date().getFullYear();
 const moisCourant = MOIS[new Date().getMonth()];
+// Location a terme echu : le mois que l'on encaisse par defaut est le mois
+// PRECEDENT (ex. en juillet, on encaisse le loyer de juin).
+const _echu = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
+const moisEchu = MOIS[_echu.getMonth()];
+const anneeEchu = _echu.getFullYear();
 const PAYMENT_TOLERANCE = 1;
 
 function parseMonthText(txt, year) {
@@ -109,7 +114,7 @@ export async function render() {
       ],
       values: row
         ? { ...row, _bien: row.property_code, _locataire: row.tenant_nom, mois_payes_txt: monthListText(row.mois_payes, row.mois_concerne, row.annee_concernee).replace(/ \d{4}/g, ''), mois_dus_txt: row.mois_dus ? monthListText(row.mois_dus).replace(/ \d{4}/g, '') : '' }
-        : { date: fmt.today(), annee_concernee: anneeCourante, mois_concerne: moisCourant, mois_payes_txt: moisCourant, nombre_mois_payes: 1, nombre_mois_dus: 0 },
+        : { date: fmt.today(), annee_concernee: anneeEchu, mois_concerne: moisEchu, mois_payes_txt: moisEchu, nombre_mois_payes: 1, nombre_mois_dus: 0 },
       onChange: (v, changed, set) => {
         if (changed === 'subscription_id') {
           const s = subMap[String(v.subscription_id)];
@@ -178,9 +183,9 @@ export async function render() {
         <div id="bulkErr" class="alert alert-error" style="display:none"></div>
         <div class="form-grid">
           <div class="field"><label>Mois concerné <span class="req">*</span></label>
-            <select id="bMois">${MOIS.map((m) => `<option${m === moisCourant ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
+            <select id="bMois">${MOIS.map((m) => `<option${m === moisEchu ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
           <div class="field"><label>Année concernée <span class="req">*</span></label>
-            <input type="number" id="bAnnee" value="${anneeCourante}" /></div>
+            <input type="number" id="bAnnee" value="${anneeEchu}" /></div>
           <div class="field col-2"><label>Date du paiement</label><input type="date" id="bDate" value="${fmt.today()}" /></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0 8px">
@@ -188,7 +193,7 @@ export async function render() {
           <button type="button" class="btn btn-ghost btn-sm" id="toggleAll">Tout décocher</button>
         </div>
         <div class="checklist" id="bList">${items}</div>
-        <p class="hint">Un loyer déjà enregistré pour la même période sera automatiquement ignoré (pas de doublon).</p>
+        <p class="hint">Loyers à terme échu : par défaut, on encaisse le mois précédent (déjà consommé). Un loyer déjà enregistré pour la même période sera automatiquement ignoré (pas de doublon).</p>
       </div>
       <div class="modal-foot">
         <button class="btn btn-ghost" data-close>Annuler</button>

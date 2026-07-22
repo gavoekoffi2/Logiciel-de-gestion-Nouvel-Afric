@@ -148,18 +148,20 @@ router.post('/register', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Connexion par e-mail.
+// Connexion par e-mail, téléphone/username ou identifiant interne.
 // ---------------------------------------------------------------------------
 router.post('/login', async (req, res) => {
   try {
-    const email = clean((req.body || {}).email).toLowerCase();
+    const identifier = clean((req.body || {}).email || (req.body || {}).identifier).toLowerCase();
     const password = clean((req.body || {}).password);
-    if (!email || !password) {
-      return res.status(400).json({ error: 'E-mail et mot de passe requis.' });
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'Identifiant et mot de passe requis.' });
     }
-    const user = await db.prepare('SELECT * FROM users WHERE email = ? AND actif = 1').get(email);
+    const user = await db.prepare(
+      'SELECT * FROM users WHERE actif = 1 AND (lower(email) = ? OR lower(username) = ?)'
+    ).get(identifier, identifier);
     if (!user || !verifyPassword(password, user.password)) {
-      return res.status(401).json({ error: 'E-mail ou mot de passe incorrect.' });
+      return res.status(401).json({ error: 'Identifiant ou mot de passe incorrect.' });
     }
     req.session.userId = user.id;
     req.session.role = user.role;

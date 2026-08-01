@@ -97,6 +97,13 @@ input[readonly] { background: #f1f5f9; color: var(--muted); }
 textarea { resize: vertical; min-height: 64px; }
 .field { margin-bottom: 14px; }
 .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.subscription-help {
+  display: flex; flex-direction: column; gap: 5px; margin-top: 18px; padding: 14px;
+  border: 1px solid #cde8dc; border-radius: var(--radius-sm); background: #f0faf6;
+  color: #31564a; font-size: 12.5px; line-height: 1.45;
+}
+.subscription-help b { color: var(--brand-dark); font-size: 13px; }
+.subscription-help a { align-self: flex-start; margin-top: 3px; color: var(--brand-dark); font-weight: 800; text-decoration: underline; }
 
 /* ---------- Mise en page (app) ------------------------------------------ */
 .app { display: flex; min-height: 100vh; }

@@ -13,7 +13,10 @@ test('MaGérance landing is restricted to the business hostname', () => {
 });
 
 test('the MaGérance landing markets real software operations', () => {
-  for (const feature of ['caution', 'Encaisser un loyer', 'Reste à reverser', 'dépense / réparation', 'Journal d’activité', 'sauvegarde']) {
-    assert.match(landing, new RegExp(feature, 'i'));
-  }
+  for (const feature of ['caution', 'Encaisser un loyer', 'Reste à reverser', 'dépense / réparation', 'Journal d’activité', 'sauvegarde']) assert.match(landing, new RegExp(feature, 'i'));
+});
+
+test('the hero uses an explicit simulated MaGérance dashboard capture', () => {
+  assert.match(landing, /magerance-dashboard-preview\.png/);
+  assert.equal(fs.existsSync(require.resolve('../public/assets/magerance-dashboard-preview.png')), true);
 });

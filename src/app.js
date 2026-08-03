@@ -23,6 +23,13 @@ const platformRouter = require('./platform');
 
 const isProd = process.env.NODE_ENV === 'production';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+// MaGérance est le lien public d'acquisition des entreprises. Les autres
+// domaines de cette application restent des accès de plateforme / agences.
+const MAGERANCE_HOSTS = new Set([
+  'magerance.76.13.129.252.sslip.io',
+  'magerance.finablasolution.cloud',
+]);
+const isMageranceHost = (req) => MAGERANCE_HOSTS.has(String(req.hostname || '').toLowerCase());
 
 const app = express();
 
@@ -104,10 +111,13 @@ app.get('/login', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')
 app.get('/e/:slug', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'register.html')));
 
-// Accueil public de la plateforme : destiné aux entreprises. Les espaces
-// dédiés d'agences restent isolés sous /e/<slug> et conservent leur connexion.
+// L'accueil marketing est exclusivement sur le domaine MaGérance Entreprises.
+// Les autres domaines continuent directement vers leur accès applicatif.
 app.get('/', (req, res, next) => {
-  if (!req.session || !req.session.userId) return res.sendFile(path.join(PUBLIC_DIR, 'landing.html'));
+  if (!req.session || !req.session.userId) {
+    if (isMageranceHost(req)) return res.sendFile(path.join(PUBLIC_DIR, 'landing.html'));
+    return res.redirect('/login');
+  }
   next();
 });
 

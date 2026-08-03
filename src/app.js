@@ -104,9 +104,10 @@ app.get('/login', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')
 app.get('/e/:slug', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'register.html')));
 
-// Application principale : nécessite une session.
+// Accueil public de la plateforme : destiné aux entreprises. Les espaces
+// dédiés d'agences restent isolés sous /e/<slug> et conservent leur connexion.
 app.get('/', (req, res, next) => {
-  if (!req.session || !req.session.userId) return res.redirect('/login');
+  if (!req.session || !req.session.userId) return res.sendFile(path.join(PUBLIC_DIR, 'landing.html'));
   next();
 });
 

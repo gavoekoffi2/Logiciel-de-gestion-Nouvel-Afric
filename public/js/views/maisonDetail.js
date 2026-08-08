@@ -1,4 +1,5 @@
 import { api, icon, el, escapeHtml, dataTable, badge, fmt, pageHeader, formModal, openModal, confirmDialog, toast, MOIS } from '../core.js';
+import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText } from '../periodControls.js';
 
 function miniStat(label, value, danger) {
   return `<div style="background:#f8fafc;border:1px solid #eef2f6;border-radius:12px;padding:12px">
@@ -57,6 +58,20 @@ function serializeFees(v) {
   const fees = collectFees(v);
   return { autre_frais: fees.length ? JSON.stringify(fees) : '', montant_autre_frais: fees.reduce((a, f) => a + f.montant, 0) };
 }
+function feeValues(raw) {
+  const values = {};
+  try {
+    const fees = JSON.parse(raw || '[]');
+    if (Array.isArray(fees)) fees.forEach((f) => {
+      if (FEE_LABELS.includes(f.libelle)) values[`fee_${f.libelle}`] = Number(f.montant) || 0;
+      else if (!values.fee_autre_label) {
+        values.fee_autre_label = f.libelle || '';
+        values.fee_autre_montant = Number(f.montant) || 0;
+      }
+    });
+  } catch (_) { /* ancien format non structuré */ }
+  return values;
+}
 
 // Premier mois encore impaye (pour pre-remplir l'encaissement).
 function nextUnpaid(s) {
@@ -64,13 +79,15 @@ function nextUnpaid(s) {
 }
 
 export async function render() {
-  const id = new URLSearchParams(location.hash.split('?')[1] || '').get('id');
+  const hashParams = new URLSearchParams(location.hash.split('?')[1] || '');
+  const id = hashParams.get('id');
+  const selectedPeriod = periodState(hashParams, 'current');
   if (!id) { location.hash = '#/maisons'; return; }
 
   const content = document.getElementById('content');
   content.innerHTML = '<div class="spinner"></div>';
   let data;
-  try { data = await api.get('/api/properties/' + id + '/details'); }
+  try { data = await api.get('/api/properties/' + id + '/details?' + periodQuery(selectedPeriod)); }
   catch (e) { content.innerHTML = `<div class="alert alert-error">${escapeHtml(e.message)}</div>`; return; }
 
   const p = data.property;
@@ -196,6 +213,77 @@ export async function render() {
     });
   }
 
+  function openEditTenant(s) {
+    formModal({
+      title: 'Modifier le locataire et son bail',
+      size: 'lg',
+      submitLabel: 'Enregistrer les modifications',
+      fields: [
+        { name: 'nom_prenoms', label: 'Nom et prénoms', required: true, col: 2 },
+        { name: 'contact', label: 'Contact (téléphone)', required: true },
+        { name: 'email', label: 'Email' },
+        { name: 'adresse', label: 'Adresse', type: 'textarea' },
+        { name: 'montant_loyer', label: 'Loyer mensuel', type: 'number', required: true, min: 1 },
+        { name: 'date_souscription', label: 'Date de souscription', type: 'date' },
+        { name: 'date_entree', label: 'Date d’entrée', type: 'date', required: true },
+        { name: 'date_debut_paiement', label: 'Date début de paiement', type: 'date', required: true },
+        { name: 'nombre_mois_caution', label: 'Nombre de mois de caution', type: 'number', min: 0 },
+        { name: 'montant_caution', label: 'Montant caution', type: 'number', readonly: true },
+        { name: 'nombre_mois_garantie', label: 'Nombre de mois de garantie', type: 'number', min: 0 },
+        { name: 'montant_garantie', label: 'Montant garantie', type: 'number', readonly: true },
+        { name: 'nombre_mois_avance', label: 'Nombre de mois d’avance', type: 'number', min: 0 },
+        { name: 'montant_avance', label: 'Montant avance', type: 'number', readonly: true },
+        ...tenantFeeFields(),
+      ],
+      values: {
+        ...s,
+        nom_prenoms: s.tenant_nom || '',
+        contact: s.tenant_contact || '',
+        email: s.tenant_email || '',
+        adresse: s.tenant_adresse || '',
+        ...feeValues(s.autre_frais),
+      },
+      onChange: (v, changed, set) => {
+        const loyer = Number(v.montant_loyer) || 0;
+        set('montant_caution', (Number(v.nombre_mois_caution) || 0) * loyer);
+        set('montant_garantie', (Number(v.nombre_mois_garantie) || 0) * loyer);
+        set('montant_avance', (Number(v.nombre_mois_avance) || 0) * loyer);
+        set('montant_autre_frais', feesTotal(v));
+      },
+      onSubmit: async (v) => {
+        const fees = serializeFees(v);
+        await api.put('/api/subscriptions/' + s.id + '/tenant', {
+          ...s,
+          ...v,
+          ...fees,
+          nom_prenoms: v.nom_prenoms,
+          contact: v.contact,
+          email: v.email,
+          adresse: v.adresse,
+          caution: Number(v.montant_caution) || 0,
+          statut: s.statut,
+        });
+        toast('Locataire et bail modifiés.');
+        render();
+      },
+    });
+  }
+
+  async function deleteTenant(s) {
+    const ok = await confirmDialog({
+      title: 'Supprimer le locataire', danger: true, okLabel: 'Supprimer',
+      message: `Supprimer « ${s.tenant_nom || 'ce locataire'} » et son bail erroné ? Cette action est possible uniquement s’il n’existe aucun paiement.`,
+    });
+    if (!ok) return;
+    try {
+      await api.del('/api/tenants/' + s.tenant_id);
+      toast('Locataire supprimé.');
+      render();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
   // Le locataire a quitté le bien : on clôture le bail (historique conservé,
   // logement de nouveau disponible).
   async function departTenant(s) {
@@ -262,6 +350,12 @@ export async function render() {
       const encBtn = el(`<button class="btn btn-accent btn-sm">${icon('collect', 15)} Encaisser un loyer</button>`);
       encBtn.onclick = () => openEncaisser(s, null);
       bar.appendChild(encBtn);
+      const editBtn = el(`<button class="btn btn-ghost btn-sm">${icon('edit', 15)} Modifier</button>`);
+      editBtn.onclick = () => openEditTenant(s);
+      bar.appendChild(editBtn);
+      const deleteTenantBtn = el(`<button class="btn btn-ghost btn-sm" style="color:#b91c1c">${icon('trash', 15)} Supprimer</button>`);
+      deleteTenantBtn.onclick = () => deleteTenant(s);
+      bar.appendChild(deleteTenantBtn);
       const departBtn = el(`<button class="btn btn-ghost btn-sm" style="color:#b45309">${icon('back', 15)} Le locataire a quitté</button>`);
       departBtn.onclick = () => departTenant(s);
       bar.appendChild(departBtn);
@@ -284,7 +378,7 @@ export async function render() {
     } else if ((s.paiements || []).length) {
       card.appendChild(dataTable({
         columns: [
-          { label: 'Période', render: (m) => `${escapeHtml(m.mois_concerne || '—')} ${m.annee_concernee || ''}` },
+          { label: 'Période', render: (m) => escapeHtml(filteredPeriodText(m)) },
           { label: 'Payé', num: true, render: (m) => fmt.money(m.montant_paye) },
           { label: 'Date', render: (m) => fmt.date(m.date) },
           { label: 'Statut', render: (m) => badge(m.statut, m.statut === 'Soldé' ? 'green' : 'red') },
@@ -298,7 +392,13 @@ export async function render() {
 
     // Bail désactivé (locataire parti) : permettre la suppression définitive.
     if (s.statut !== 'Active') {
-      const bar = el('<div style="display:flex;justify-content:flex-end;margin-top:10px"></div>');
+      const bar = el('<div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:10px"></div>');
+      const editBtn = el(`<button class="btn btn-ghost btn-sm">${icon('edit', 15)} Modifier le locataire</button>`);
+      editBtn.onclick = () => openEditTenant(s);
+      bar.appendChild(editBtn);
+      const deleteTenantBtn = el(`<button class="btn btn-ghost btn-sm" style="color:#b91c1c">${icon('trash', 15)} Supprimer le locataire</button>`);
+      deleteTenantBtn.onclick = () => deleteTenant(s);
+      bar.appendChild(deleteTenantBtn);
       const delBtn = el(`<button class="btn btn-ghost btn-sm" style="color:#b91c1c">${icon('trash', 15)} Supprimer définitivement le bail</button>`);
       delBtn.onclick = () => deleteSub(s);
       bar.appendChild(delBtn);
@@ -310,11 +410,12 @@ export async function render() {
   const root = el(`
     <div>
       <button class="btn btn-ghost btn-sm" id="back" style="margin-bottom:12px">${icon('back', 16)} Retour aux biens</button>
+      ${periodControls(selectedPeriod)}
 
       <div class="card card-pad" style="margin-bottom:16px;background:linear-gradient(135deg,#f8fafc,#ffffff);border:1px solid #e2e8f0">
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px">
           <div>
-            <div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:800">Fiche complète du bien</div>
+            <div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:800">Fiche du bien — ${escapeHtml((data.periode && data.periode.label) || '')}</div>
             <h2 style="font-size:21px;margin:5px 0 4px;color:#0f172a">${icon('houses', 22)} ${escapeHtml(p.type_construction || 'Bien')}${p.designation ? ' — ' + escapeHtml(p.designation) : ''}</h2>
             <div class="muted" style="font-size:13px">Code : <span style="font-family:monospace;font-weight:800;color:#0f172a">${escapeHtml(p.code)}</span></div>
           </div>
@@ -367,13 +468,16 @@ export async function render() {
       </div>
       <div id="repairs"></div>
 
-      ${sectionTitle('Historique complet des paiements du bien', 'Tous les encaissements enregistrés sur ce bien, tous locataires confondus.')}
+      ${sectionTitle('Paiements du bien sur la période', 'Encaissements correspondant à la période sélectionnée, tous locataires confondus.')}
       <div id="payments"></div>
 
       ${sectionTitle('Reversements liés à ce bien', 'Reversements propriétaire contenant au moins un paiement de ce bien.')}
       <div id="payouts"></div>
     </div>`);
   pageHeader(root);
+  bindPeriodControls(root, selectedPeriod, (next) => {
+    location.hash = `#/bien?id=${encodeURIComponent(id)}&${periodQuery(next)}`;
+  });
   root.querySelector('#back').onclick = () => { location.hash = '#/maisons'; };
   root.querySelector('#addTenantsTop').onclick = openAddTenants;
   root.querySelector('#addTenants').onclick = openAddTenants;
@@ -404,7 +508,7 @@ export async function render() {
     columns: [
       { label: 'Reçu', render: (r) => r.numero_recu ? escapeHtml(r.numero_recu) : codeCellFallback(r.code) },
       { label: 'Locataire', render: (r) => escapeHtml(r.tenant_nom || '—') },
-      { label: 'Période', render: (r) => `${escapeHtml(r.mois_concerne || '—')} ${r.annee_concernee || ''}` },
+      { label: 'Période', render: (r) => escapeHtml(filteredPeriodText(r)) },
       { label: 'Date', render: (r) => fmt.date(r.date) },
       { label: 'À payer', num: true, render: (r) => fmt.money(r.montant_a_payer) },
       { label: 'Payé', num: true, render: (r) => fmt.money(r.montant_paye) },

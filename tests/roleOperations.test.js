@@ -135,5 +135,5 @@ test('operational navigation keeps tenant and payment work centralized inside pr
   const propertyDetail = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'views', 'maisonDetail.js'), 'utf8');
   assert.match(propertyDetail, /Ajouter un locataire dans ce bien/);
   assert.match(propertyDetail, /Encaisser un loyer/);
-  assert.match(propertyDetail, /Historique complet des paiements du bien/);
+  assert.match(propertyDetail, /Paiements du bien sur la période/);
 });

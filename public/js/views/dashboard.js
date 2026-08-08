@@ -1,11 +1,13 @@
 import { api, icon, el, escapeHtml, fmt, badge, store, pageHeader } from '../core.js';
+import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText } from '../periodControls.js';
 
 function stat(icClass, icName, value, label) {
   return `<div class="stat"><div class="ic ${icClass}">${icon(icName, 24)}</div><div><div class="v">${value}</div><div class="l">${label}</div></div></div>`;
 }
 
 export async function render() {
-  const d = await api.get('/api/dashboard');
+  const selectedPeriod = periodState(new URLSearchParams(location.hash.split('?')[1] || ''), 'ytd');
+  const d = await api.get('/api/dashboard?' + periodQuery(selectedPeriod));
   const prenom = (store.user.nom || store.user.email || 'utilisateur').split(' ')[0];
 
   const pct = d.loyer_attendu > 0 ? Math.min(100, Math.round((d.loyer_encaisse_mois / d.loyer_attendu) * 100)) : 0;
@@ -14,8 +16,10 @@ export async function render() {
     <div>
       <div class="card card-pad" style="background:linear-gradient(120deg,#0f6e4f,#0b5740);color:#eafff6;border:none;margin-bottom:18px">
         <h2 style="color:#fff;font-size:20px">Bonjour ${escapeHtml(prenom)} 👋</h2>
-        <p style="margin:6px 0 0;color:#bfe9d8">Voici la situation de votre parc locatif — ${escapeHtml(d.moisCourant)} ${d.anneeCourante}.</p>
+        <p style="margin:6px 0 0;color:#bfe9d8">Voici la situation de votre parc locatif — ${escapeHtml((d.periode && d.periode.label) || `${d.moisCourant} ${d.anneeCourante}`)}.</p>
       </div>
+
+      ${periodControls(selectedPeriod)}
 
       <div class="grid stats-grid">
         ${stat('ic-brand', 'owners', fmt.int(d.nb_proprietaires), 'Propriétaires')}
@@ -24,7 +28,7 @@ export async function render() {
         ${stat('ic-green', 'building', fmt.int(d.nb_disponibles) + ' / ' + fmt.int(d.nb_occupees), 'Disponibles / Occupés')}
       </div>
 
-      <div class="section-title">${icon('money', 18)} Finances</div>
+      <div class="section-title">${icon('money', 18)} Finances — ${escapeHtml((d.periode && d.periode.label) || '')}</div>
       <div class="grid stats-grid">
         ${stat('ic-green', 'wallet', fmt.money(d.total_loyer), 'Total loyers encaissés')}
         ${stat('ic-blue', 'money', fmt.money(d.total_caution), 'Total cautions')}
@@ -35,8 +39,8 @@ export async function render() {
 
       <div class="grid" style="grid-template-columns:1.1fr 1fr;align-items:start;margin-top:18px" id="bottomGrid">
         <div class="card card-pad">
-          <h3 style="font-size:15px;margin-bottom:6px">Recouvrement de ${escapeHtml(d.moisRecouvrement || d.moisCourant)} ${d.anneeRecouvrement || d.anneeCourante}</h3>
-          <div class="muted" style="font-size:12px;margin-bottom:4px">Loyers à terme échu : on encaisse actuellement le mois précédent.</div>
+          <h3 style="font-size:15px;margin-bottom:6px">Recouvrement — ${escapeHtml((d.periode && d.periode.label) || '')}</h3>
+          <div class="muted" style="font-size:12px;margin-bottom:4px">Comparaison des loyers attendus et encaissés sur la période sélectionnée.</div>
           <div style="display:flex;justify-content:space-between;font-size:13px;color:#475569;margin:10px 0 6px">
             <span>Encaissé : <b style="color:#15803d">${fmt.money(d.loyer_encaisse_mois)}</b></span>
             <span>Attendu : <b>${fmt.money(d.loyer_attendu)}</b></span>
@@ -59,6 +63,9 @@ export async function render() {
       </div>
     </div>`);
   pageHeader(root);
+  bindPeriodControls(root, selectedPeriod, (next) => {
+    location.hash = '#/dashboard?' + periodQuery(next);
+  });
 
   // Derniers paiements
   const recent = root.querySelector('#recent');
@@ -67,7 +74,7 @@ export async function render() {
   } else {
     recent.innerHTML = `<div class="table-wrap"><table class="data"><tbody>${
       d.derniers_paiements.map((p) => `<tr>
-        <td><b>${escapeHtml(p.tenant_nom || '—')}</b><br><span class="muted" style="font-size:12px">${escapeHtml(p.mois_concerne || '')} ${p.annee_concernee || ''}</span></td>
+        <td><b>${escapeHtml(p.tenant_nom || '—')}</b><br><span class="muted" style="font-size:12px">${escapeHtml(filteredPeriodText(p))}</span></td>
         <td class="num">${fmt.money(p.montant_paye)}</td>
         <td>${badge(p.statut, p.statut === 'Soldé' ? 'green' : 'red')}</td>
       </tr>`).join('')

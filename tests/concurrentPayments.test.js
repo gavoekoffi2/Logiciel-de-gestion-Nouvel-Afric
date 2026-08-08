@@ -11,6 +11,7 @@ process.env.NODE_ENV = 'test';
 process.env.SESSION_SECRET = 'test-secret-concurrent-payments';
 
 const { app, ready } = require('../src/app');
+const { db } = require('../src/db');
 
 async function withServer(fn) {
   await ready;
@@ -201,6 +202,17 @@ test('property deletion succeeds even when an active subscription exists', async
   await withServer(async (baseUrl) => {
     const { adminCookie, property, subscriptions } = await createNouvelAfrikFixture(baseUrl);
     const sub = subscriptions[0];
+    const beforeDashboard = await request(baseUrl, 'GET', '/api/dashboard?mode=range&from=2026-01&to=2026-02', null, adminCookie);
+
+    await db.prepare(`CREATE TRIGGER fail_property_delete
+      BEFORE DELETE ON properties BEGIN SELECT RAISE(FAIL, 'échec suppression simulé'); END`).run();
+    const failedDelete = await request(baseUrl, 'DELETE', `/api/properties/${property.id}`, null, adminCookie);
+    assert.equal(failedDelete.res.status, 500);
+    const afterFailure = await request(baseUrl, 'GET', `/api/subscriptions/${sub.id}`, null, adminCookie);
+    assert.equal(afterFailure.data.statut, 'Active');
+    assert.equal(afterFailure.data.property_id, property.id);
+    assert.equal(afterFailure.data.date_fin, null);
+    await db.prepare('DROP TRIGGER fail_property_delete').run();
 
     const deleted = await request(baseUrl, 'DELETE', `/api/properties/${property.id}`, null, adminCookie);
     assert.equal(deleted.res.status, 200, JSON.stringify(deleted.data));
@@ -217,5 +229,8 @@ test('property deletion succeeds even when an active subscription exists', async
     assert.equal(archived.res.status, 200, JSON.stringify(archived.data));
     assert.equal(archived.data.statut, 'Desactive');
     assert.equal(archived.data.property_id, null);
+    assert.match(archived.data.date_fin, /^\d{4}-\d{2}-\d{2}$/);
+    const afterDashboard = await request(baseUrl, 'GET', '/api/dashboard?mode=range&from=2026-01&to=2026-02', null, adminCookie);
+    assert.equal(afterDashboard.data.loyer_attendu, beforeDashboard.data.loyer_attendu);
   });
 });

@@ -77,6 +77,10 @@ const db = {
       },
     };
   },
+  async batch(statements) {
+    const built = statements.map((statement) => buildStmt(statement.sql, statement.args || []));
+    return client.batch(built, 'write');
+  },
 };
 
 function isTransientDatabaseLock(err) {
@@ -220,6 +224,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   montant_autre_frais INTEGER NOT NULL DEFAULT 0,
   date_entree         TEXT,
   date_debut_paiement TEXT,
+  date_fin             TEXT,
   statut              TEXT NOT NULL DEFAULT 'Active',  -- 'Active' | 'Desactive'
   created_at          TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -344,6 +349,7 @@ const MIGRATIONS = [
   "ALTER TABLE payments ADD COLUMN mois_payes TEXT",
   "ALTER TABLE payments ADD COLUMN nombre_mois_dus INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE payments ADD COLUMN mois_dus TEXT",
+  "ALTER TABLE subscriptions ADD COLUMN date_fin TEXT",
 ];
 
 // ---------------------------------------------------------------------------
@@ -500,6 +506,27 @@ async function migrateLegacyData() {
   console.log(`Migration : entreprise historique "${nom}" creee (id ${companyId}).`);
 }
 
+async function migrateInactiveSubscriptionDates(companyId = null) {
+  await db.prepare(
+    `UPDATE subscriptions AS s
+     SET date_fin = COALESCE(
+       (SELECT substr(a.created_at, 1, 10)
+        FROM audit_log a
+        WHERE a.company_id = s.company_id
+          AND a.entity = 'Souscription'
+          AND a.label LIKE '%(' || s.code || ')%'
+        ORDER BY a.id DESC LIMIT 1),
+       (SELECT MAX(p.date) FROM payments p
+        WHERE p.subscription_id = s.id AND p.company_id = s.company_id),
+       s.date_debut_paiement,
+       s.date_entree,
+       s.date_souscription
+     )
+     WHERE s.statut <> 'Active' AND (s.date_fin IS NULL OR s.date_fin = '')
+       AND (? IS NULL OR s.company_id = ?)`
+  ).run(companyId, companyId);
+}
+
 // Jeu de demonstration TOGOLAIS (local uniquement, jamais en production).
 async function seedDemoCompany() {
   const companyId = (await db.prepare(
@@ -579,6 +606,7 @@ async function init() {
   await seedPlatform();
   await seedSuperAdmin();
   await migrateLegacyData();
+  await migrateInactiveSubscriptionDates();
 
   // Demo : uniquement hors production, et seulement si aucune entreprise.
   // La demo n'est JAMAIS creee sur la base en ligne (Turso) sauf SEED_DEMO explicite,
@@ -603,5 +631,6 @@ module.exports = {
   todayYMD,
   addDaysYMD,
   addYearsYMD,
+  migrateInactiveSubscriptionDates,
   TRIAL_DAYS,
 };

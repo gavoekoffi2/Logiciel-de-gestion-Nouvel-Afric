@@ -70,9 +70,9 @@ test('company admin can export and restore only its own company data', async () 
       `INSERT INTO subscriptions
        (company_id, code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution, montant_caution,
         nombre_mois_avance, montant_avance, nombre_mois_garantie, montant_garantie, autre_frais, montant_autre_frais,
-        date_entree, date_debut_paiement, statut)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(cidA, 'SUB-A', propertyA, tenantA, '2026-01-01', 75000, 2, 150000, 1, 75000, 1, 75000, 'Garage', 15000, '2026-01-01', '2026-01-01', 'Active')).lastInsertRowid;
+        date_entree, date_debut_paiement, date_fin, statut)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(cidA, 'SUB-A', propertyA, tenantA, '2026-01-01', 75000, 2, 150000, 1, 75000, 1, 75000, 'Garage', 15000, '2026-01-01', '2026-01-01', '2026-03-15', 'Desactive')).lastInsertRowid;
     await db.prepare(
       `INSERT INTO payments
        (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer,
@@ -92,6 +92,7 @@ test('company admin can export and restore only its own company data', async () 
     assert.equal(backup.donnees.owners.length, 1);
     assert.equal(backup.donnees.tenants[0].montant_autre_frais, 15000);
     assert.equal(backup.donnees.payments[0].mois_payes, 'Janvier,Février');
+    assert.equal(backup.donnees.subscriptions[0].date_fin, '2026-03-15');
     assert.equal(backup.donnees.audit_log.length, 1);
 
     await db.prepare('DELETE FROM payments WHERE company_id = ?').run(cidA);
@@ -117,6 +118,9 @@ test('company admin can export and restore only its own company data', async () 
     const restoredPayment = await db.prepare('SELECT * FROM payments WHERE company_id = ?').get(cidA);
     assert.equal(restoredPayment.nombre_mois_payes, 2);
     assert.equal(restoredPayment.mois_dus, 'Mars');
+    const restoredSubscription = await db.prepare('SELECT * FROM subscriptions WHERE company_id = ?').get(cidA);
+    assert.equal(restoredSubscription.date_fin, '2026-03-15');
+    assert.equal(restoredSubscription.statut, 'Desactive');
     const otherCompanyOwner = await db.prepare('SELECT * FROM owners WHERE company_id = ?').get(cidB);
     assert.equal(otherCompanyOwner.nom_prenoms, 'Propriétaire B');
   } finally {

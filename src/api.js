@@ -14,10 +14,11 @@
  */
 
 const express = require('express');
-const { db, hashPassword, computeSubscription } = require('./db');
+const { db, hashPassword, computeSubscription, migrateInactiveSubscriptionDates } = require('./db');
 const { requireRole, publicUser, companyState } = require('./auth');
 const { isNoSubscriptionCompanyName } = require('./companyPolicy');
 const { normalizePaidMonths, parsePeriods, buildPaidMonthMap, summarizeRecoveryMonths } = require('./paymentPeriods');
+const { normalizeRange, periodInRange, paymentAmountsInRange, rangeLabel } = require('./periodRange');
 
 const router = express.Router();
 const settingsRouter = express.Router();
@@ -128,6 +129,44 @@ function lastDueYearMonth(ref) {
   return { annee, mois };
 }
 
+function lastDueAtDeparture(dateValue) {
+  const match = String(dateValue || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  let annee = Number(match[1]);
+  let mois = Number(match[2]);
+  const day = Number(match[3]);
+  const lastDay = new Date(annee, mois, 0).getDate();
+  if (day < lastDay) {
+    mois -= 1;
+    if (mois < 1) { mois = 12; annee -= 1; }
+  }
+  return { annee, mois };
+}
+
+function latestPaymentPeriod(payments) {
+  let latest = null;
+  for (const payment of payments || []) {
+    for (const period of parsePeriods(payment.mois_payes, payment.mois_concerne, payment.annee_concernee)) {
+      const month = MOIS.indexOf(period.mois) + 1;
+      const index = period.annee * 12 + month;
+      if (month > 0 && (!latest || index > latest.index)) latest = { annee: period.annee, mois: month, index };
+    }
+  }
+  return latest && { annee: latest.annee, mois: latest.mois };
+}
+
+function subscriptionEndPeriod(subscription, payments, { includeCurrent = false, ref = new Date() } = {}) {
+  if (subscription.statut === 'Active') {
+    return includeCurrent
+      ? { annee: ref.getFullYear(), mois: ref.getMonth() + 1 }
+      : lastDueYearMonth(ref);
+  }
+  const end = lastDueAtDeparture(subscription.date_fin) || latestPaymentPeriod(payments);
+  if (!end) return null;
+  const due = lastDueYearMonth(ref);
+  return end.annee * 12 + end.mois > due.annee * 12 + due.mois ? due : end;
+}
+
 // Roles possibles AU SEIN d'une entreprise (le super-admin est hors entreprise).
 const COMPANY_ROLES = ['admin', 'secretaire', 'assistant'];
 const normRole = (r) => (COMPANY_ROLES.includes(clean(r)) ? clean(r) : 'secretaire');
@@ -227,7 +266,7 @@ router.get('/tenants', wrap(async (req, res) => {
       s.montant_loyer AS active_property_loyer
     FROM tenants t
     LEFT JOIN subscriptions s ON s.tenant_id = t.id AND s.company_id = t.company_id AND s.statut = 'Active'
-    LEFT JOIN properties p ON p.id = s.property_id`;
+    LEFT JOIN properties p ON p.id = s.property_id AND p.company_id = t.company_id`;
   let rows;
   if (q) {
     const like = `%${q}%`;
@@ -266,24 +305,18 @@ router.post('/tenants', wrap(async (req, res) => {
     if (!toInt(req.body.montant_loyer)) return res.status(400).json({ error: 'Le montant du loyer est requis.' });
   }
 
-  const info = await db.prepare(
-    'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution, autre_frais, montant_autre_frais) VALUES (?,?,?,?,?,?,?,?)'
-  ).run(cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), clean(req.body.autre_frais), toInt(req.body.montant_autre_frais));
-  await logAction(req, 'Création', 'Locataire', p.nom_prenoms);
-  const tenantId = info.lastInsertRowid;
-
-  // Si un bien est choisi au moment d'enregistrer le locataire, on cree aussi
-  // la souscription (le bail) qui relie ce locataire a ce bien.
+  let subscription = null;
+  let subscriptionCode = null;
   if (propertyId) {
     const montantLoyer = toInt(req.body.montant_loyer);
     const nbCaution = toInt(req.body.nombre_mois_caution);
     const nbAvance = toInt(req.body.nombre_mois_avance);
     const nbGarantie = toInt(req.body.nombre_mois_garantie);
     const today = new Date().toISOString().slice(0, 10);
-    const s = subscriptionPayload({
+    subscription = subscriptionPayload({
       ...req.body,
       property_id: propertyId,
-      tenant_id: tenantId,
+      tenant_id: null,
       montant_loyer: montantLoyer,
       montant_caution: req.body.montant_caution !== undefined ? req.body.montant_caution : nbCaution * montantLoyer,
       montant_avance: req.body.montant_avance !== undefined ? req.body.montant_avance : nbAvance * montantLoyer,
@@ -293,22 +326,34 @@ router.post('/tenants', wrap(async (req, res) => {
       date_debut_paiement: clean(req.body.date_debut_paiement) || clean(req.body.date_entree) || today,
       statut: clean(req.body.statut) || 'Active',
     });
-    const subErr = await validateSubscription(s, cid);
+    applySubscriptionEndDate(subscription, req.body);
+    const subErr = await validateSubscription(subscription, cid, 0, { plannedTenant: true });
     if (subErr) return res.status(400).json({ error: subErr });
-    const code = await genCode('subscriptions', 'S', s.date_souscription);
-    await db.prepare(
-      `INSERT INTO subscriptions
-       (company_id, code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution,
-        montant_caution, nombre_mois_avance, montant_avance, nombre_mois_garantie, montant_garantie,
-        autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
-       VALUES (@company_id,@code,@property_id,@tenant_id,@date_souscription,@montant_loyer,@nombre_mois_caution,
-        @montant_caution,@nombre_mois_avance,@montant_avance,@nombre_mois_garantie,@montant_garantie,
-        @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@statut)`
-    ).run({ company_id: cid, code, ...s });
-    await logAction(req, 'Création', 'Souscription', `${code} — ${p.nom_prenoms}`);
+    subscriptionCode = await genCode('subscriptions', 'S', subscription.date_souscription);
   }
 
-  res.json(await db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId));
+  const statements = [{
+    sql: 'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution, autre_frais, montant_autre_frais) VALUES (?,?,?,?,?,?,?,?)',
+    args: [cid, p.nom_prenoms, p.contact, p.email, p.adresse, toInt(req.body.caution), clean(req.body.autre_frais), toInt(req.body.montant_autre_frais)],
+  }];
+  if (subscription) {
+    const { tenant_id: _plannedTenantId, ...subscriptionArgs } = subscription;
+    statements.push({
+      sql: `INSERT INTO subscriptions
+        (company_id, code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution,
+         montant_caution, nombre_mois_avance, montant_avance, nombre_mois_garantie, montant_garantie,
+         autre_frais, montant_autre_frais, date_entree, date_debut_paiement, date_fin, statut)
+        VALUES (@company_id,@code,@property_id,last_insert_rowid(),@date_souscription,@montant_loyer,@nombre_mois_caution,
+         @montant_caution,@nombre_mois_avance,@montant_avance,@nombre_mois_garantie,@montant_garantie,
+         @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@date_fin,@statut)`,
+      args: { company_id: cid, code: subscriptionCode, ...subscriptionArgs },
+    });
+  }
+  const results = await db.batch(statements);
+  const tenantId = Number(results[0].lastInsertRowid);
+  await logAction(req, 'Création', 'Locataire', p.nom_prenoms);
+  if (subscription) await logAction(req, 'Création', 'Souscription', `${subscriptionCode} — ${p.nom_prenoms}`);
+  res.json(await db.prepare('SELECT * FROM tenants WHERE id = ? AND company_id = ?').get(tenantId, cid));
 }));
 
 router.get('/tenants/:id/details', wrap(async (req, res) => {
@@ -320,7 +365,7 @@ router.get('/tenants/:id/details', wrap(async (req, res) => {
   const payments = await db.prepare(
     `SELECT r.*, p.code AS property_code, p.designation, p.type_construction
      FROM payments r
-     LEFT JOIN properties p ON p.id = r.property_id
+     LEFT JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
      WHERE r.tenant_id = ? AND r.company_id = ?
      ORDER BY r.annee_concernee DESC, r.id DESC`
   ).all(id, cid);
@@ -349,10 +394,35 @@ router.put('/tenants/:id', wrap(async (req, res) => {
 }));
 
 router.delete('/tenants/:id', wrap(async (req, res) => {
+  const cid = req.companyId;
   const id = toInt(req.params.id);
-  const row = await db.prepare('SELECT nom_prenoms FROM tenants WHERE id = ? AND company_id = ?').get(id, req.companyId);
-  await db.prepare('DELETE FROM tenants WHERE id = ? AND company_id = ?').run(id, req.companyId);
-  if (row) await logAction(req, 'Suppression', 'Locataire', row.nom_prenoms);
+  const row = await db.prepare('SELECT nom_prenoms FROM tenants WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!row) return res.status(404).json({ error: 'Locataire introuvable.' });
+
+  // Les deux suppressions et le contrôle d'historique sont exécutés dans une
+  // transaction unique. Une création de paiement concurrente ne peut donc pas
+  // produire un enregistrement orphelin entre le contrôle et la suppression.
+  await db.batch([
+    {
+      sql: `DELETE FROM subscriptions
+            WHERE tenant_id = ? AND company_id = ?
+              AND NOT EXISTS (SELECT 1 FROM payments WHERE tenant_id = ? AND company_id = ?)`,
+      args: [id, cid, id, cid],
+    },
+    {
+      sql: `DELETE FROM tenants
+            WHERE id = ? AND company_id = ?
+              AND NOT EXISTS (SELECT 1 FROM payments WHERE tenant_id = ? AND company_id = ?)`,
+      args: [id, cid, id, cid],
+    },
+  ]);
+  const remaining = await db.prepare('SELECT 1 FROM tenants WHERE id = ? AND company_id = ?').get(id, cid);
+  if (remaining) {
+    return res.status(400).json({
+      error: 'Ce locataire possède déjà des paiements. Modifiez sa fiche ou clôturez son bail afin de conserver l’historique comptable.',
+    });
+  }
+  await logAction(req, 'Suppression', 'Locataire', row.nom_prenoms);
   res.json({ ok: true });
 }));
 
@@ -364,10 +434,10 @@ const PROPERTY_SELECT = `
          o.email AS owner_email, o.adresse AS owner_adresse,
          CASE WHEN EXISTS (
            SELECT 1 FROM subscriptions s
-           WHERE s.property_id = p.id AND s.statut = 'Active'
+           WHERE s.property_id = p.id AND s.company_id = p.company_id AND s.statut = 'Active'
          ) THEN 'Occupé' ELSE 'Disponible' END AS statut
   FROM properties p
-  LEFT JOIN owners o ON o.id = p.owner_id
+  LEFT JOIN owners o ON o.id = p.owner_id AND o.company_id = p.company_id
 `;
 
 router.get('/properties', wrap(async (req, res) => {
@@ -462,9 +532,25 @@ router.delete('/properties/:id', wrap(async (req, res) => {
   // - les baux du bien sont désactivés et ne ressortent plus comme actifs ;
   // - les règlements/reversements restent consultables dans l'historique global ;
   // - les réparations du bien sont supprimées par la clé étrangère/cascade.
-  await db.prepare("UPDATE subscriptions SET statut = 'Desactive', property_id = NULL WHERE property_id = ? AND company_id = ?").run(id, cid);
-  await db.prepare('UPDATE payments SET property_id = NULL WHERE property_id = ? AND company_id = ?').run(id, cid);
-  await db.prepare('DELETE FROM properties WHERE id = ? AND company_id = ?').run(id, cid);
+  const deletionDate = new Date().toISOString().slice(0, 10);
+  await db.batch([
+    {
+      sql: "UPDATE subscriptions SET statut = 'Desactive', date_fin = COALESCE(NULLIF(date_fin, ''), ?) WHERE property_id = ? AND company_id = ?",
+      args: [deletionDate, id, cid],
+    },
+    {
+      sql: 'UPDATE payments SET property_id = NULL WHERE property_id = ? AND company_id = ?',
+      args: [id, cid],
+    },
+    {
+      sql: "UPDATE subscriptions SET property_id = NULL WHERE property_id = ? AND company_id = ?",
+      args: [id, cid],
+    },
+    {
+      sql: 'DELETE FROM properties WHERE id = ? AND company_id = ?',
+      args: [id, cid],
+    },
+  ]);
   if (row) await logAction(req, 'Suppression', 'Bien', row.code);
   res.json({ ok: true });
 }));
@@ -475,11 +561,12 @@ router.delete('/properties/:id', wrap(async (req, res) => {
 const SUB_SELECT = `
   SELECT s.*, p.code AS property_code, p.type_construction, p.nombre_piece, p.designation,
          o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
-         t.nom_prenoms AS tenant_nom, t.contact AS tenant_contact
+         t.nom_prenoms AS tenant_nom, t.contact AS tenant_contact,
+         t.email AS tenant_email, t.adresse AS tenant_adresse
   FROM subscriptions s
-  LEFT JOIN properties p ON p.id = s.property_id
-  LEFT JOIN owners o ON o.id = p.owner_id
-  LEFT JOIN tenants t ON t.id = s.tenant_id
+  LEFT JOIN properties p ON p.id = s.property_id AND p.company_id = s.company_id
+  LEFT JOIN owners o ON o.id = p.owner_id AND o.company_id = s.company_id
+  LEFT JOIN tenants t ON t.id = s.tenant_id AND t.company_id = s.company_id
 `;
 
 router.get('/subscriptions', wrap(async (req, res) => {
@@ -523,21 +610,51 @@ function subscriptionPayload(body) {
     montant_autre_frais: toInt(body.montant_autre_frais),
     date_entree: clean(body.date_entree),
     date_debut_paiement: clean(body.date_debut_paiement),
+    date_fin: clean(body.date_fin) || null,
     statut: clean(body.statut) || 'Active',
   };
 }
 
-async function validateSubscription(s, companyId, excludeId = 0) {
+function isValidYMD(value) {
+  const text = clean(value);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const date = new Date(`${text}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === text;
+}
+
+function applySubscriptionEndDate(subscription, body, current = null) {
+  if (subscription.statut === 'Active') {
+    subscription.date_fin = null;
+    return subscription;
+  }
+  const supplied = Object.prototype.hasOwnProperty.call(body || {}, 'date_fin') ? clean(body.date_fin) : '';
+  subscription.date_fin = supplied || (current && current.date_fin) || new Date().toISOString().slice(0, 10);
+  return subscription;
+}
+
+async function validateSubscription(s, companyId, excludeId = 0, { plannedTenant = false } = {}) {
   if (!s.property_id) return 'Veuillez sélectionner le bien (maison).';
-  if (!s.tenant_id) return 'Veuillez sélectionner le locataire.';
+  if (!plannedTenant && !s.tenant_id) return 'Veuillez sélectionner le locataire.';
   const prop = await db.prepare('SELECT 1 FROM properties WHERE id = ? AND company_id = ?').get(s.property_id, companyId);
   if (!prop) return 'Bien introuvable.';
-  const ten = await db.prepare('SELECT 1 FROM tenants WHERE id = ? AND company_id = ?').get(s.tenant_id, companyId);
-  if (!ten) return 'Locataire introuvable.';
+  if (!plannedTenant) {
+    const ten = await db.prepare('SELECT 1 FROM tenants WHERE id = ? AND company_id = ?').get(s.tenant_id, companyId);
+    if (!ten) return 'Locataire introuvable.';
+  }
   if (!s.montant_loyer) return 'Le montant du loyer est requis.';
+  if (!['Active', 'Desactive'].includes(s.statut)) return 'Statut de bail invalide.';
+  if (s.date_souscription && !isValidYMD(s.date_souscription)) return 'Date de souscription invalide.';
   if (!s.date_entree) return 'Veuillez saisir la date d’entrée.';
+  if (!isValidYMD(s.date_entree)) return 'Date d’entrée invalide.';
   if (!s.date_debut_paiement) return 'Veuillez saisir la date de début de paiement.';
-  if (s.statut === 'Active') {
+  if (!isValidYMD(s.date_debut_paiement)) return 'Date de début de paiement invalide.';
+  if (s.date_debut_paiement < s.date_entree) return 'La date de début de paiement ne peut pas précéder la date d’entrée.';
+  if (s.statut === 'Desactive') {
+    if (!s.date_fin || !isValidYMD(s.date_fin)) return 'Date de fin invalide.';
+    if (s.date_fin < s.date_entree || s.date_fin < s.date_debut_paiement) return 'La date de fin ne peut pas précéder le début du bail.';
+  }
+  if (s.statut === 'Active' && !plannedTenant) {
     const dup = await db.prepare(
       `SELECT 1 FROM subscriptions
        WHERE company_id = ? AND tenant_id = ? AND statut = 'Active' AND id <> ?`
@@ -553,10 +670,10 @@ async function insertSubscription(companyId, payload, dateForCode) {
     `INSERT INTO subscriptions
      (company_id, code, property_id, tenant_id, date_souscription, montant_loyer, nombre_mois_caution,
       montant_caution, nombre_mois_avance, montant_avance, nombre_mois_garantie, montant_garantie,
-      autre_frais, montant_autre_frais, date_entree, date_debut_paiement, statut)
+      autre_frais, montant_autre_frais, date_entree, date_debut_paiement, date_fin, statut)
      VALUES (@company_id,@code,@property_id,@tenant_id,@date_souscription,@montant_loyer,@nombre_mois_caution,
       @montant_caution,@nombre_mois_avance,@montant_avance,@nombre_mois_garantie,@montant_garantie,
-      @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@statut)`
+      @autre_frais,@montant_autre_frais,@date_entree,@date_debut_paiement,@date_fin,@statut)`
   ).run({ company_id: companyId, code, ...payload });
   return db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(info.lastInsertRowid, companyId);
 }
@@ -564,6 +681,7 @@ async function insertSubscription(companyId, payload, dateForCode) {
 router.post('/subscriptions', wrap(async (req, res) => {
   const cid = req.companyId;
   const s = subscriptionPayload(req.body);
+  applySubscriptionEndDate(s, req.body);
   const err = await validateSubscription(s, cid);
   if (err) return res.status(400).json({ error: err });
   const saved = await insertSubscription(cid, s, s.date_souscription);
@@ -574,7 +692,10 @@ router.post('/subscriptions', wrap(async (req, res) => {
 router.put('/subscriptions/:id', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
+  const current = await db.prepare('SELECT * FROM subscriptions WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!current) return res.status(404).json({ error: 'Souscription introuvable.' });
   const s = subscriptionPayload(req.body);
+  applySubscriptionEndDate(s, req.body, current);
   const err = await validateSubscription(s, cid, id);
   if (err) return res.status(400).json({ error: err });
   await db.prepare(
@@ -584,11 +705,66 @@ router.put('/subscriptions/:id', wrap(async (req, res) => {
        nombre_mois_avance=@nombre_mois_avance, montant_avance=@montant_avance,
        nombre_mois_garantie=@nombre_mois_garantie, montant_garantie=@montant_garantie, autre_frais=@autre_frais,
        montant_autre_frais=@montant_autre_frais, date_entree=@date_entree,
-       date_debut_paiement=@date_debut_paiement, statut=@statut
+       date_debut_paiement=@date_debut_paiement, date_fin=@date_fin, statut=@statut
      WHERE id=@id AND company_id=@company_id`
   ).run({ id, company_id: cid, ...s });
   const updated = await db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(id, cid);
   await logAction(req, 'Modification', 'Souscription', updated && updated.code);
+  res.json(updated);
+}));
+
+router.put('/subscriptions/:id/tenant', wrap(async (req, res) => {
+  const cid = req.companyId;
+  const id = toInt(req.params.id);
+  const current = await db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(id, cid);
+  if (!current || !current.tenant_id) return res.status(404).json({ error: 'Locataire ou bail introuvable.' });
+
+  const person = personPayload(req.body);
+  // Les réponses de l'API masquent les coordonnées personnelles. Si le formulaire
+  // renvoie une valeur masquée inchangée, préserver la valeur réelle en base ;
+  // une nouvelle valeur complète saisie par l'utilisateur reste modifiable.
+  if (person.contact.includes('*')) person.contact = clean(current.tenant_contact);
+  if (person.email.includes('*')) person.email = clean(current.tenant_email);
+  const personError = await validatePerson(person, 'tenants', cid, current.tenant_id, 'locataire');
+  if (personError) return res.status(400).json({ error: personError });
+  const subscription = subscriptionPayload({
+    ...req.body,
+    property_id: current.property_id,
+    tenant_id: current.tenant_id,
+  });
+  applySubscriptionEndDate(subscription, req.body, current);
+  const subscriptionError = await validateSubscription(subscription, cid, id);
+  if (subscriptionError) return res.status(400).json({ error: subscriptionError });
+
+  await db.batch([
+    {
+      sql: `UPDATE tenants SET nom_prenoms=@nom_prenoms, contact=@contact, email=@email, adresse=@adresse,
+            caution=@caution, autre_frais=@autre_frais, montant_autre_frais=@montant_autre_frais
+            WHERE id=@tenant_id AND company_id=@company_id`,
+      args: {
+        ...person,
+        caution: toInt(req.body.caution),
+        autre_frais: clean(req.body.autre_frais),
+        montant_autre_frais: toInt(req.body.montant_autre_frais),
+        tenant_id: current.tenant_id,
+        company_id: cid,
+      },
+    },
+    {
+      sql: `UPDATE subscriptions SET
+              property_id=@property_id, tenant_id=@tenant_id, date_souscription=@date_souscription,
+              montant_loyer=@montant_loyer, nombre_mois_caution=@nombre_mois_caution, montant_caution=@montant_caution,
+              nombre_mois_avance=@nombre_mois_avance, montant_avance=@montant_avance,
+              nombre_mois_garantie=@nombre_mois_garantie, montant_garantie=@montant_garantie,
+              autre_frais=@autre_frais, montant_autre_frais=@montant_autre_frais,
+              date_entree=@date_entree, date_debut_paiement=@date_debut_paiement,
+              date_fin=@date_fin, statut=@statut
+            WHERE id=@id AND company_id=@company_id`,
+      args: { id, company_id: cid, ...subscription },
+    },
+  ]);
+  const updated = await db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(id, cid);
+  await logAction(req, 'Modification', 'Locataire et bail', `${person.nom_prenoms} — ${updated.code}`);
   res.json(updated);
 }));
 
@@ -609,7 +785,12 @@ router.post('/subscriptions/:id/depart', wrap(async (req, res) => {
   const id = toInt(req.params.id);
   const row = await db.prepare(`${SUB_SELECT} WHERE s.id = ? AND s.company_id = ?`).get(id, cid);
   if (!row) return res.status(404).json({ error: 'Souscription introuvable.' });
-  await db.prepare("UPDATE subscriptions SET statut = 'Desactive' WHERE id = ? AND company_id = ?").run(id, cid);
+  const dateFin = clean(req.body && req.body.date_fin) || new Date().toISOString().slice(0, 10);
+  if (!isValidYMD(dateFin)) return res.status(400).json({ error: 'Date de fin invalide.' });
+  if (dateFin < row.date_entree || dateFin < row.date_debut_paiement) {
+    return res.status(400).json({ error: 'La date de fin ne peut pas précéder le début du bail.' });
+  }
+  await db.prepare("UPDATE subscriptions SET statut = 'Desactive', date_fin = ? WHERE id = ? AND company_id = ?").run(dateFin, id, cid);
   await logAction(req, 'Modification', 'Souscription', `Départ du locataire — ${row.tenant_nom || ''} (${row.code})`);
   res.json({ ok: true });
 }));
@@ -680,20 +861,21 @@ router.post('/properties/:id/tenants', wrap(async (req, res) => {
 router.get('/properties/:id/details', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
+  const range = normalizeRange(req.query, { mode: 'all' });
   const property = await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ? AND p.company_id = ?`).get(id, cid);
   if (!property) return res.status(404).json({ error: 'Bien introuvable.' });
 
-  const [subs, repairs, allPayments, payoutRows] = await Promise.all([
+  const [subs, allRepairs, paymentRows, payoutRows] = await Promise.all([
     db.prepare(`${SUB_SELECT} WHERE s.property_id = ? AND s.company_id = ? ORDER BY s.statut, s.id DESC`).all(id, cid),
     db.prepare('SELECT * FROM repairs WHERE property_id = ? AND company_id = ? ORDER BY annee DESC, id DESC').all(id, cid),
     db.prepare(
       `SELECT r.id, r.code, r.date, r.mois_concerne, r.annee_concernee,
-              r.montant_a_payer, r.montant_paye, r.reste_a_payer, r.statut, r.numero_recu,
+              r.montant_a_payer, r.montant_paye, r.reste_a_payer, r.statut, r.numero_recu, r.mois_payes,
               r.payout_id, s.code AS subscription_code, t.nom_prenoms AS tenant_nom,
               t.contact AS tenant_contact
        FROM payments r
-       LEFT JOIN subscriptions s ON s.id = r.subscription_id
-       LEFT JOIN tenants t ON t.id = r.tenant_id
+       LEFT JOIN subscriptions s ON s.id = r.subscription_id AND s.company_id = r.company_id
+       LEFT JOIN tenants t ON t.id = r.tenant_id AND t.company_id = r.company_id
        WHERE r.property_id = ? AND r.company_id = ?
        ORDER BY r.annee_concernee DESC, r.id DESC`
     ).all(id, cid),
@@ -706,69 +888,101 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     ).all(id, cid, cid),
   ]);
 
+  const repairs = allRepairs.filter((r) => periodInRange({ mois: r.mois, annee: r.annee }, range));
+  const allPayments = paymentRows.map((p) => {
+    const selected = paymentAmountsInRange(p, range);
+    return selected.matches ? {
+      ...p,
+      montant_a_payer: selected.montant_a_payer,
+      montant_paye: selected.montant_paye,
+      reste_a_payer: selected.reste_a_payer,
+      statut: selected.statut,
+      periodes_filtrees: selected.selectedPeriods,
+    } : null;
+  }).filter(Boolean);
+
   for (const s of subs) {
     const pays = await db.prepare(
-      `SELECT id, code, date, mois_concerne, annee_concernee, montant_a_payer, montant_paye, reste_a_payer, statut
+      `SELECT id, code, date, mois_concerne, annee_concernee, mois_payes, montant_a_payer, montant_paye, reste_a_payer, statut
        FROM payments WHERE subscription_id = ? AND company_id = ? ORDER BY annee_concernee, id`
     ).all(s.id, cid);
 
     const paidBy = {};
     let total_paye = 0;
+    const filteredPays = [];
     for (const p of pays) {
-      const k = `${p.annee_concernee}-${p.mois_concerne}`;
-      paidBy[k] = (paidBy[k] || 0) + (p.montant_paye || 0);
-      total_paye += p.montant_paye || 0;
+      const selected = paymentAmountsInRange(p, range);
+      if (!selected.matches) continue;
+      for (const period of selected.periodAmounts) {
+        const k = `${period.annee}-${period.mois}`;
+        paidBy[k] = (paidBy[k] || 0) + period.montant_paye;
+      }
+      total_paye += selected.montant_paye;
+      filteredPays.push({
+        ...p,
+        montant_a_payer: selected.montant_a_payer,
+        montant_paye: selected.montant_paye,
+        reste_a_payer: selected.reste_a_payer,
+        statut: selected.statut,
+        periodes_filtrees: selected.selectedPeriods,
+      });
     }
 
     const loyer = s.montant_loyer || 0;
-    // L'echeancier n'est calcule que pour les baux actifs (loyers attendus).
-    // Location a terme echu : on affiche aussi le mois EN COURS, mais marque
-    // « A echoir » — il n'est ni exigible ni compte comme impaye tant qu'il
-    // n'est pas termine.
+    // Les baux actifs affichent aussi le mois courant (« À échoir »). Les baux
+    // clôturés conservent leur échéancier historique jusqu'au dernier mois dû.
     let echeancier = [];
-    if (s.statut === 'Active' && s.date_debut_paiement) {
+    if (s.date_debut_paiement) {
       const now = new Date();
       const curY = now.getFullYear();
-      const curMi = now.getMonth() + 1; // mois courant en base 1
-      echeancier = monthsUntil(s.date_debut_paiement, curY, curMi).map((mm) => {
-        const mi = MOIS.indexOf(mm.mois) + 1;
-        const echu = mm.annee < curY || (mm.annee === curY && mi < curMi);
-        const paye = paidBy[`${mm.annee}-${mm.mois}`] || 0;
-        const diff = loyer - paye;
-        const resteReel = diff > PAYMENT_TOLERANCE ? diff : 0;
-        const reste = echu ? resteReel : 0; // seuls les mois echus sont exigibles
-        let statut;
-        if (loyer > 0 && resteReel === 0) statut = 'Payé';
-        else if (!echu) statut = paye > 0 ? 'Partiel' : 'À échoir';
-        else statut = paye > 0 ? 'Partiel' : 'Impayé';
-        return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, echu, statut };
-      });
+      const curMi = now.getMonth() + 1;
+      const end = subscriptionEndPeriod(s, pays, { includeCurrent: true, ref: now });
+      if (end) echeancier = monthsUntil(s.date_debut_paiement, end.annee, end.mois)
+        .filter((mm) => periodInRange(mm, range))
+        .map((mm) => {
+          const mi = MOIS.indexOf(mm.mois) + 1;
+          const echu = mm.annee < curY || (mm.annee === curY && mi < curMi);
+          const paye = paidBy[`${mm.annee}-${mm.mois}`] || 0;
+          const diff = loyer - paye;
+          const resteReel = diff > PAYMENT_TOLERANCE ? diff : 0;
+          const reste = echu ? resteReel : 0;
+          let statut;
+          if (loyer > 0 && resteReel === 0) statut = 'Payé';
+          else if (!echu) statut = paye > 0 ? 'Partiel' : 'À échoir';
+          else statut = paye > 0 ? 'Partiel' : 'Impayé';
+          return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, echu, statut };
+        });
     }
     const total_attendu = echeancier.reduce((a, m) => a + (m.echu ? m.attendu : 0), 0);
     const reste = echeancier.reduce((a, m) => a + m.reste, 0);
     const mois_retard = echeancier.filter((m) => m.echu && m.reste > 0).length;
 
-    s.paiements = pays;
+    s.paiements = filteredPays;
     s.echeancier = echeancier;
-    s.resume = { nb_paiements: pays.length, total_attendu, total_paye, reste, mois_retard };
+    s.resume = { nb_paiements: filteredPays.length, total_attendu, total_paye, reste, mois_retard };
   }
 
   const payoutLineRows = await db.prepare(
-    `SELECT r.payout_id, r.id, r.code, r.date, r.mois_concerne, r.annee_concernee, r.montant_paye,
-            p.part_commission, t.nom_prenoms AS tenant_nom
+    `SELECT r.payout_id, r.id, r.code, r.date, r.mois_concerne, r.annee_concernee, r.mois_payes, r.montant_paye,
+            r.montant_a_payer, r.reste_a_payer, p.part_commission, t.nom_prenoms AS tenant_nom
      FROM payments r
-     LEFT JOIN properties p ON p.id = r.property_id
-     LEFT JOIN tenants t ON t.id = r.tenant_id
+     LEFT JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
+     LEFT JOIN tenants t ON t.id = r.tenant_id AND t.company_id = r.company_id
      WHERE r.property_id = ? AND r.company_id = ? AND r.payout_id IS NOT NULL
      ORDER BY r.annee_concernee, r.id`
   ).all(id, cid);
   const linesByPayout = payoutLineRows.reduce((acc, l) => {
+    const selected = paymentAmountsInRange(l, range);
+    if (!selected.matches) return acc;
+    l.montant_paye = selected.montant_paye;
+    l.periodes_filtrees = selected.selectedPeriods;
     l.commission = Math.round((l.montant_paye * (l.part_commission || 0)) / 100);
     l.net = l.montant_paye - l.commission;
     (acc[l.payout_id] ||= []).push(l);
     return acc;
   }, {});
-  const payouts = payoutRows.map((v) => ({ ...v, lignes_bien: linesByPayout[v.id] || [] }));
+  const payouts = payoutRows.map((v) => ({ ...v, lignes_bien: linesByPayout[v.id] || [] }))
+    .filter((v) => v.lignes_bien.length > 0);
 
   const totals = {
     total_paye: allPayments.reduce((a, p) => a + (p.montant_paye || 0), 0),
@@ -779,7 +993,10 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     nombre_locataires_actifs: subs.filter((s) => s.statut === 'Active').length,
   };
 
-  res.json({ property, subscriptions: subs, repairs, payments: allPayments, payouts, totals });
+  res.json({
+    property, subscriptions: subs, repairs, payments: allPayments, payouts, totals,
+    periode: { from: range.fromValue, to: range.toValue, label: rangeLabel(range), monthCount: range.monthCount },
+  });
 }));
 
 // ===========================================================================
@@ -838,33 +1055,49 @@ router.get('/recouvrement', wrap(async (req, res) => {
 
   const [subs, pays, reps] = await Promise.all([
     db.prepare(
-      `SELECT s.id, s.montant_loyer, s.date_debut_paiement, s.montant_avance,
+      `SELECT s.id, s.montant_loyer, s.date_debut_paiement, s.date_fin, s.statut, s.montant_avance,
               p.id AS property_id, p.code AS property_code, p.designation, p.type_construction,
               p.ville, p.commune, p.quartier, p.part_commission,
               o.id AS owner_id, o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
               t.nom_prenoms AS tenant_nom
        FROM subscriptions s
-       JOIN properties p ON p.id = s.property_id
-       LEFT JOIN owners o ON o.id = p.owner_id
-       LEFT JOIN tenants t ON t.id = s.tenant_id
-       WHERE s.company_id = ? AND s.statut = 'Active'`
+       JOIN properties p ON p.id = s.property_id AND p.company_id = s.company_id
+       LEFT JOIN owners o ON o.id = p.owner_id AND o.company_id = s.company_id
+       LEFT JOIN tenants t ON t.id = s.tenant_id AND t.company_id = s.company_id
+       WHERE s.company_id = ?`
     ).all(cid),
     db.prepare('SELECT subscription_id, mois_concerne, annee_concernee, mois_payes, nombre_mois_payes, montant_paye, numero_recu FROM payments WHERE company_id = ?').all(cid),
     db.prepare('SELECT property_id, montant FROM repairs WHERE company_id = ? AND mois = ? AND annee = ?').all(cid, moisSel, anneeSel),
   ]);
 
-  const within = (mo, an) => (an < anneeSel || (an === anneeSel && (MOIS.indexOf(mo) + 1) <= emIndex));
-  const payBySub = buildPaidMonthMap(pays.filter((p) => {
-    const periods = parsePeriods(p.mois_payes, p.mois_concerne, p.annee_concernee);
-    return periods.some((per) => within(per.mois, per.annee));
-  }));
+  const reportIndex = anneeSel * 12 + emIndex;
+  const cumulativeRange = { fromIndex: Number.MIN_SAFE_INTEGER, toIndex: reportIndex };
+  const cumulativePayments = pays.map((payment) => {
+    const selected = paymentAmountsInRange(payment, cumulativeRange);
+    return selected.matches ? {
+      ...payment,
+      montant_paye: selected.montant_paye,
+      mois_payes: JSON.stringify(selected.selectedPeriods),
+      mois_concerne: selected.selectedPeriods[0].mois,
+      annee_concernee: selected.selectedPeriods[0].annee,
+    } : null;
+  }).filter(Boolean);
+  const payBySub = buildPaidMonthMap(cumulativePayments);
   const repByProp = new Map();
   for (const r of reps) repByProp.set(r.property_id, (repByProp.get(r.property_id) || 0) + (r.montant || 0));
 
   const maisons = new Map();
   for (const s of subs) {
     const loyer = s.montant_loyer || 0;
-    const months = monthsUntil(s.date_debut_paiement, anneeSel, emIndex);
+    let end = { annee: anneeSel, mois: emIndex };
+    if (s.statut !== 'Active') {
+      const historicalEnd = lastDueAtDeparture(s.date_fin)
+        || latestPaymentPeriod(pays.filter((payment) => payment.subscription_id === s.id));
+      if (!historicalEnd) continue;
+      if (historicalEnd.annee * 12 + historicalEnd.mois < reportIndex) end = historicalEnd;
+    }
+    const months = monthsUntil(s.date_debut_paiement, end.annee, end.mois);
+    if (!months.length) continue;
     const pe = payBySub.get(s.id) || { paid: new Map(), total: 0, lastRecu: null };
     const summary = summarizeRecoveryMonths(months, pe, loyer);
     const montantDu = summary.montant_du;
@@ -922,9 +1155,9 @@ const PAY_SELECT = `
          t.nom_prenoms AS tenant_nom, t.contact AS tenant_contact,
          s.code AS subscription_code, s.montant_loyer AS subscription_loyer
   FROM payments r
-  LEFT JOIN properties p ON p.id = r.property_id
-  LEFT JOIN tenants t ON t.id = r.tenant_id
-  LEFT JOIN subscriptions s ON s.id = r.subscription_id
+  LEFT JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
+  LEFT JOIN tenants t ON t.id = r.tenant_id AND t.company_id = r.company_id
+  LEFT JOIN subscriptions s ON s.id = r.subscription_id AND s.company_id = r.company_id
 `;
 
 router.get('/payments', wrap(async (req, res) => {
@@ -933,6 +1166,20 @@ router.get('/payments', wrap(async (req, res) => {
   const annee = clean(req.query.annee);
   const statut = clean(req.query.statut);
   let rows = await db.prepare(`${PAY_SELECT} WHERE r.company_id = ? ORDER BY r.id DESC`).all(req.companyId);
+  if (req.query.from || req.query.to || req.query.mode) {
+    const range = normalizeRange(req.query, { mode: 'current' });
+    rows = rows.map((r) => {
+      const selected = paymentAmountsInRange(r, range);
+      return selected.matches ? {
+        ...r,
+        montant_a_payer: selected.montant_a_payer,
+        montant_paye: selected.montant_paye,
+        reste_a_payer: selected.reste_a_payer,
+        statut: selected.statut,
+        periodes_filtrees: selected.selectedPeriods,
+      } : null;
+    }).filter(Boolean);
+  }
   if (mois) rows = rows.filter((r) => r.mois_concerne === mois);
   if (annee) rows = rows.filter((r) => String(r.annee_concernee) === annee);
   if (statut) rows = rows.filter((r) => r.statut === statut);
@@ -963,12 +1210,23 @@ async function paymentPayload(body, companyId) {
     const sub = await db.prepare('SELECT * FROM subscriptions WHERE id = ? AND company_id = ?').get(subscription_id, companyId);
     if (sub) {
       montant_loyer_unitaire = toInt(sub.montant_loyer);
-      if (!property_id) property_id = sub.property_id;
-      if (!tenant_id) tenant_id = sub.tenant_id;
+      // Une souscription valide est la source d'autorité : le client ne peut pas
+      // substituer un bien ou un locataire d'une autre entreprise.
+      property_id = sub.property_id;
+      tenant_id = sub.tenant_id;
       if (!montant_a_payer) montant_a_payer = sub.montant_loyer;
     } else {
       subscription_id = null;
     }
+  }
+
+  if (property_id) {
+    const property = await db.prepare('SELECT 1 FROM properties WHERE id = ? AND company_id = ?').get(property_id, companyId);
+    if (!property) property_id = null;
+  }
+  if (tenant_id) {
+    const tenant = await db.prepare('SELECT 1 FROM tenants WHERE id = ? AND company_id = ?').get(tenant_id, companyId);
+    if (!tenant) tenant_id = null;
   }
 
   const montant_paye = toInt(body.montant_paye);
@@ -1098,7 +1356,7 @@ const PAYOUT_SELECT = `
   SELECT v.*, o.nom_prenoms AS owner_nom, o.contact AS owner_contact,
          o.email AS owner_email, o.adresse AS owner_adresse
   FROM payouts v
-  LEFT JOIN owners o ON o.id = v.owner_id
+  LEFT JOIN owners o ON o.id = v.owner_id AND o.company_id = v.company_id
 `;
 
 // Detail (par paiement) des loyers encaisses NON encore reverses pour un
@@ -1108,8 +1366,8 @@ async function dueForOwner(companyId, ownerId) {
     `SELECT r.id, r.code, r.date, r.mois_concerne, r.annee_concernee, r.montant_paye,
             p.code AS property_code, p.part_commission, t.nom_prenoms AS tenant_nom
      FROM payments r
-     JOIN properties p ON p.id = r.property_id
-     LEFT JOIN tenants t ON t.id = r.tenant_id
+     JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
+     LEFT JOIN tenants t ON t.id = r.tenant_id AND t.company_id = r.company_id
      WHERE r.company_id = ? AND p.owner_id = ? AND r.payout_id IS NULL AND r.montant_paye > 0
      ORDER BY r.annee_concernee, r.id`
   ).all(companyId, ownerId);
@@ -1132,8 +1390,8 @@ router.get('/payouts/due', wrap(async (req, res) => {
             COALESCE(SUM(r.montant_paye), 0) AS loyers,
             COALESCE(SUM(ROUND(r.montant_paye * COALESCE(p.part_commission, 0) / 100.0)), 0) AS commission
      FROM payments r
-     JOIN properties p ON p.id = r.property_id
-     JOIN owners o ON o.id = p.owner_id
+     JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
+     JOIN owners o ON o.id = p.owner_id AND o.company_id = r.company_id
      WHERE r.company_id = ? AND r.payout_id IS NULL AND r.montant_paye > 0
      GROUP BY o.id, o.nom_prenoms, o.contact
      HAVING loyers > 0
@@ -1176,8 +1434,8 @@ router.get('/payouts/:id', wrap(async (req, res) => {
     `SELECT r.id, r.code, r.date, r.mois_concerne, r.annee_concernee, r.montant_paye,
             p.code AS property_code, p.part_commission, t.nom_prenoms AS tenant_nom
      FROM payments r
-     LEFT JOIN properties p ON p.id = r.property_id
-     LEFT JOIN tenants t ON t.id = r.tenant_id
+     LEFT JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
+     LEFT JOIN tenants t ON t.id = r.tenant_id AND t.company_id = r.company_id
      WHERE r.payout_id = ? AND r.company_id = ?
      ORDER BY r.annee_concernee, r.id`
   ).all(id, cid);
@@ -1250,60 +1508,100 @@ router.get('/dashboard', wrap(async (req, res) => {
   const now = new Date();
   const moisCourant = MOIS[now.getMonth()];
   const anneeCourante = now.getFullYear();
-  // Location a terme echu : le mois que l'on encaisse actuellement est le mois
-  // PRECEDENT (ex. en juillet, on recouvre le loyer de juin).
-  const due = lastDueYearMonth();
-  const moisRecouvrement = MOIS[due.mois - 1];
-  const anneeRecouvrement = due.annee;
-
+  const range = normalizeRange(req.query, { mode: 'ytd', ref: now });
   const one = (sql, ...p) => db.prepare(sql).get(...p);
 
-  const [
-    proprietaires, locataires, maisons, occupees,
-    caution, avance, loyer, attendu, encaisseMois, impayesNb, impayesMt, aReverser,
-    derniers_paiements, allProps,
-  ] = await Promise.all([
+  const [proprietaires, locataires, maisons, occupees, subscriptions, paymentRows, allProps] = await Promise.all([
     one('SELECT COUNT(*) n FROM owners WHERE company_id = ?', cid),
     one('SELECT COUNT(*) n FROM tenants WHERE company_id = ?', cid),
     one('SELECT COUNT(*) n FROM properties WHERE company_id = ?', cid),
     one("SELECT COUNT(DISTINCT property_id) n FROM subscriptions WHERE company_id = ? AND statut='Active' AND property_id IS NOT NULL", cid),
-    one('SELECT COALESCE(SUM(montant_caution),0) s FROM subscriptions WHERE company_id = ?', cid),
-    one('SELECT COALESCE(SUM(montant_avance),0) s FROM subscriptions WHERE company_id = ?', cid),
-    one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE company_id = ?', cid),
-    one("SELECT COALESCE(SUM(montant_loyer),0) s FROM subscriptions WHERE company_id = ? AND statut='Active'", cid),
-    one('SELECT COALESCE(SUM(montant_paye),0) s FROM payments WHERE company_id = ? AND mois_concerne=? AND annee_concernee=?', cid, moisRecouvrement, anneeRecouvrement),
-    one("SELECT COUNT(*) n FROM payments WHERE company_id = ? AND statut='Non soldé'", cid),
-    one("SELECT COALESCE(SUM(reste_a_payer),0) s FROM payments WHERE company_id = ? AND statut='Non soldé'", cid),
-    one(`SELECT COALESCE(SUM(r.montant_paye - ROUND(r.montant_paye * COALESCE(p.part_commission,0) / 100.0)), 0) s
-         FROM payments r JOIN properties p ON p.id = r.property_id
-         WHERE r.company_id = ? AND r.payout_id IS NULL AND r.montant_paye > 0`, cid),
-    db.prepare(`${PAY_SELECT} WHERE r.company_id = ? ORDER BY r.id DESC LIMIT 6`).all(cid),
+    db.prepare('SELECT * FROM subscriptions WHERE company_id = ?').all(cid),
+    db.prepare(
+      `SELECT r.*, p.code AS property_code, p.part_commission,
+              t.nom_prenoms AS tenant_nom, t.contact AS tenant_contact,
+         t.email AS tenant_email, t.adresse AS tenant_adresse
+       FROM payments r
+       LEFT JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
+       LEFT JOIN tenants t ON t.id = r.tenant_id AND t.company_id = r.company_id
+       WHERE r.company_id = ? ORDER BY r.id DESC`
+    ).all(cid),
     db.prepare(`${PROPERTY_SELECT} WHERE p.company_id = ?`).all(cid),
   ]);
 
+  const selectedPayments = paymentRows.map((p) => {
+    const selected = paymentAmountsInRange(p, range);
+    return selected.matches ? {
+      ...p,
+      montant_a_payer: selected.montant_a_payer,
+      montant_paye: selected.montant_paye,
+      reste_a_payer: selected.reste_a_payer,
+      statut: selected.statut,
+      periodes_filtrees: selected.selectedPeriods,
+    } : null;
+  }).filter(Boolean);
+
+  const subscriptionInRange = (s) => {
+    const match = String(s.date_souscription || s.date_entree || '').match(/^(\d{4})-(\d{2})/);
+    if (!match) return range.mode === 'all';
+    return periodInRange({ mois: MOIS[Number(match[2]) - 1], annee: Number(match[1]) }, range);
+  };
+  const paymentsBySubscription = paymentRows.reduce((grouped, payment) => {
+    if (payment.subscription_id) (grouped[payment.subscription_id] ||= []).push(payment);
+    return grouped;
+  }, {});
+  const paidMonthMap = buildPaidMonthMap(paymentRows);
+  let expected = 0;
+  let unpaidCount = 0;
+  let unpaidAmount = 0;
+  for (const subscription of subscriptions.filter((s) => s.date_debut_paiement)) {
+    const end = subscriptionEndPeriod(subscription, paymentsBySubscription[subscription.id] || []);
+    if (!end) continue;
+    const periods = monthsUntil(subscription.date_debut_paiement, end.annee, end.mois)
+      .filter((period) => periodInRange(period, range));
+    const rent = subscription.montant_loyer || 0;
+    expected += periods.length * rent;
+    const paid = (paidMonthMap.get(subscription.id) || {}).paid || new Map();
+    for (const period of periods) {
+      const entry = paid.get(`${period.annee}-${period.mois}`);
+      const remaining = Math.max(0, rent - (entry ? entry.amount : 0));
+      if (remaining > PAYMENT_TOLERANCE) {
+        unpaidCount += 1;
+        unpaidAmount += remaining;
+      }
+    }
+  }
+
+  const totalPaid = selectedPayments.reduce((sum, p) => sum + (p.montant_paye || 0), 0);
+  const aReverser = selectedPayments.filter((p) => !p.payout_id && p.montant_paye > 0)
+    .reduce((sum, p) => sum + p.montant_paye - Math.round(p.montant_paye * (p.part_commission || 0) / 100), 0);
+  const scopedSubscriptions = subscriptions.filter(subscriptionInRange);
   const nb_maisons = maisons.n;
   const nb_occupees = occupees.n;
+  const label = rangeLabel(range);
+
   const data = {
     moisCourant,
     anneeCourante,
-    moisRecouvrement,
-    anneeRecouvrement,
+    moisRecouvrement: label,
+    anneeRecouvrement: '',
+    periode: { mode: range.mode, from: range.fromValue, to: range.toValue, label, monthCount: range.monthCount },
     nb_proprietaires: proprietaires.n,
     nb_locataires: locataires.n,
     nb_maisons,
     nb_occupees,
     nb_disponibles: nb_maisons - nb_occupees,
-    total_caution: caution.s,
-    total_avance: avance.s,
-    total_loyer: loyer.s,
-    loyer_attendu: attendu.s,
-    loyer_encaisse_mois: encaisseMois.s,
-    impayes_nombre: impayesNb.n,
-    impayes_montant: impayesMt.s,
-    reste_a_reverser: aReverser.s,
+    total_caution: scopedSubscriptions.reduce((sum, s) => sum + (s.montant_caution || 0), 0),
+    total_avance: scopedSubscriptions.reduce((sum, s) => sum + (s.montant_avance || 0), 0),
+    total_loyer: totalPaid,
+    loyer_attendu: expected,
+    loyer_encaisse_mois: totalPaid,
+    impayes_nombre: unpaidCount,
+    impayes_montant: unpaidAmount,
+    reste_a_reverser: aReverser,
   };
   data.reste_attendu_mois = Math.max(0, data.loyer_attendu - data.loyer_encaisse_mois);
-  data.derniers_paiements = derniers_paiements;
+  data.derniers_paiements = selectedPayments.slice(0, 6);
   data.maisons_disponibles = allProps.filter((r) => r.statut === 'Disponible').slice(0, 6);
 
   res.json(data);
@@ -1373,7 +1671,7 @@ router.get('/audit', requireRole('admin'), wrap(async (req, res) => {
   let rows = await db.prepare(
     `SELECT a.id, a.user_id, a.user_nom, a.action, a.entity, a.label, a.created_at,
             u.nom AS current_nom, u.email AS current_email
-     FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+     FROM audit_log a LEFT JOIN users u ON u.id = a.user_id AND u.company_id = a.company_id
      WHERE a.company_id = ? ORDER BY a.id DESC LIMIT 1000`
   ).all(req.companyId);
   if (q) {
@@ -1595,13 +1893,15 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
 
   for (const s of subscriptions) {
     const code = await uniqueCode('subscriptions', 'S', s.code);
+    const importedStatus = ['Active', 'Desactive'].includes(clean(s.statut)) ? clean(s.statut) : 'Active';
+    const importedEndDate = importedStatus === 'Desactive' && isValidYMD(s.date_fin) ? clean(s.date_fin) : null;
     const id = (await db.prepare(
       `INSERT INTO subscriptions
        (company_id, code, property_id, tenant_id, date_souscription, montant_loyer,
         nombre_mois_caution, montant_caution, nombre_mois_avance, montant_avance,
         nombre_mois_garantie, montant_garantie, autre_frais, montant_autre_frais,
-        date_entree, date_debut_paiement, statut)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        date_entree, date_debut_paiement, date_fin, statut)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       cid, code, propertyMap.get(s.property_id) || null, tenantMap.get(s.tenant_id) || null,
       clean(s.date_souscription) || null, toInt(s.montant_loyer),
@@ -1610,7 +1910,8 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
       toInt(s.nombre_mois_garantie), toInt(s.montant_garantie),
       clean(s.autre_frais), toInt(s.montant_autre_frais),
       clean(s.date_entree) || null, clean(s.date_debut_paiement) || null,
-      clean(s.statut) || 'Active'
+      importedEndDate,
+      importedStatus
     )).lastInsertRowid;
     if (s.id != null) subscriptionMap.set(s.id, id);
     counts.subscriptions++;
@@ -1675,6 +1976,7 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
     counts.audit_log++;
   }
 
+  await migrateInactiveSubscriptionDates(cid);
   res.json({ ok: true, mode, importe: counts });
 }));
 

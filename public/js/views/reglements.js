@@ -1,4 +1,5 @@
 import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, fmt, MOIS, montantEnLettres, pageHeader, printDocument, docHeader, openModal, store, codeCell } from '../core.js';
+import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText } from '../periodControls.js';
 
 const anneeCourante = new Date().getFullYear();
 const moisCourant = MOIS[new Date().getMonth()];
@@ -33,17 +34,15 @@ function monthsPayload(v) {
 }
 
 export async function render() {
-  const filtre = { q: '', mois: '', annee: '', statut: '' };
-  const annees = [];
-  for (let a = anneeCourante + 1; a >= anneeCourante - 6; a--) annees.push(a);
+  const selectedPeriod = periodState(new URLSearchParams(location.hash.split('?')[1] || ''), 'current');
+  const filtre = { q: '', statut: '' };
 
   const root = el(`
     <div>
+      ${periodControls(selectedPeriod)}
       <div class="toolbar">
         <div class="search">${icon('search', 17)}<input type="text" id="search" placeholder="Rechercher (code, bien, locataire…)" /></div>
         <div class="filters">
-          <select id="fMois"><option value="">Tous les mois</option>${MOIS.map((m) => `<option>${m}</option>`).join('')}</select>
-          <select id="fAnnee"><option value="">Toutes années</option>${annees.map((a) => `<option>${a}</option>`).join('')}</select>
           <select id="fStatut"><option value="">Tous statuts</option><option>Soldé</option><option>Non soldé</option></select>
         </div>
         <div class="spacer"></div>
@@ -53,11 +52,14 @@ export async function render() {
       <div id="list"></div>
     </div>`);
   pageHeader(root);
+  bindPeriodControls(root, selectedPeriod, (next) => {
+    location.hash = '#/reglements?' + periodQuery(next);
+  });
   const listBox = root.querySelector('#list');
 
   async function load() {
     listBox.innerHTML = '<div class="spinner"></div>';
-    const p = new URLSearchParams();
+    const p = new URLSearchParams(periodQuery(selectedPeriod));
     Object.entries(filtre).forEach(([k, v]) => { if (v) p.set(k, v); });
     const rows = await api.get('/api/payments' + (p.toString() ? '?' + p : ''));
     listBox.innerHTML = '';
@@ -66,7 +68,7 @@ export async function render() {
         { label: 'Code', render: (r) => codeCell(r.code) },
         { label: 'Locataire', render: (r) => `<b>${escapeHtml(r.tenant_nom || '—')}</b>` },
         { label: 'Bien', render: (r) => codeCell(r.property_code) },
-        { label: 'Mois payés', render: (r) => `${r.nombre_mois_payes || 1} mois<br><span class="muted">${escapeHtml(monthListText(r.mois_payes, r.mois_concerne, r.annee_concernee))}</span>` },
+        { label: 'Mois affichés', render: (r) => `${(r.periodes_filtrees || []).length || r.nombre_mois_payes || 1} mois<br><span class="muted">${escapeHtml(filteredPeriodText(r))}</span>` },
         { label: 'Mois dûs', render: (r) => r.nombre_mois_dus ? `${r.nombre_mois_dus} mois<br><span class="muted">${escapeHtml(monthListText(r.mois_dus))}</span>` : '—' },
         { label: 'À payer', num: true, render: (r) => fmt.money(r.montant_a_payer) },
         { label: 'Payé', num: true, render: (r) => fmt.money(r.montant_paye) },
@@ -232,8 +234,6 @@ export async function render() {
   root.querySelector('#bulkBtn').onclick = openBulk;
   let timer;
   root.querySelector('#search').addEventListener('input', (e) => { filtre.q = e.target.value.trim(); clearTimeout(timer); timer = setTimeout(load, 250); });
-  root.querySelector('#fMois').addEventListener('change', (e) => { filtre.mois = e.target.value; load(); });
-  root.querySelector('#fAnnee').addEventListener('change', (e) => { filtre.annee = e.target.value; load(); });
   root.querySelector('#fStatut').addEventListener('change', (e) => { filtre.statut = e.target.value; load(); });
 
   await load();

@@ -116,6 +116,15 @@ export async function render() {
         ? { ...row, _bien: row.property_code, _locataire: row.tenant_nom, mois_payes_txt: monthListText(row.mois_payes, row.mois_concerne, row.annee_concernee).replace(/ \d{4}/g, ''), mois_dus_txt: row.mois_dus ? monthListText(row.mois_dus).replace(/ \d{4}/g, '') : '' }
         : { date: fmt.today(), annee_concernee: anneeEchu, mois_concerne: moisEchu, mois_payes_txt: moisEchu, nombre_mois_payes: 1, nombre_mois_dus: 0 },
       onChange: (v, changed, set) => {
+        if (!row && changed === 'date' && v.date) {
+          const period = previousRentPeriod(v.date);
+          set('mois_payes_txt', period.mois);
+          set('mois_concerne', period.mois);
+          set('annee_concernee', period.annee);
+          v.mois_payes_txt = period.mois;
+          v.mois_concerne = period.mois;
+          v.annee_concernee = period.annee;
+        }
         if (changed === 'subscription_id') {
           const s = subMap[String(v.subscription_id)];
           if (s) {
@@ -201,6 +210,12 @@ export async function render() {
       </div>`, { size: 'lg' });
 
     modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = close; });
+    modal.querySelector('#bDate').onchange = (event) => {
+      if (!event.target.value) return;
+      const period = previousRentPeriod(event.target.value);
+      modal.querySelector('#bMois').value = period.mois;
+      modal.querySelector('#bAnnee').value = period.annee;
+    };
     const toggle = modal.querySelector('#toggleAll');
     toggle.onclick = () => {
       const boxes = modal.querySelectorAll('#bList input[type=checkbox]');

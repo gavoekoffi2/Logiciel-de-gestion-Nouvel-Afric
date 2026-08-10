@@ -11,7 +11,10 @@ export function currentMonthValue(ref = new Date()) {
 }
 
 export function previousRentPeriod(ref = new Date()) {
-  const previous = new Date(ref.getFullYear(), ref.getMonth() - 1, 1);
+  const match = String(ref || '').match(/^(\d{4})-(\d{2})/);
+  const date = match ? new Date(Number(match[1]), Number(match[2]) - 1, 1) : ref;
+  const valid = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  const previous = new Date(valid.getFullYear(), valid.getMonth() - 1, 1);
   return {
     mois: RENT_MONTHS[previous.getMonth()],
     annee: previous.getFullYear(),

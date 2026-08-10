@@ -19,4 +19,12 @@ for (const [name, source] of [['fiche du bien', house], ['règlements', payments
 
 test('the property payment form never falls back to the current month', () => {
   assert.doesNotMatch(house, /pm\.mois \|\| MOIS\[new Date\(\)\.getMonth\(\)\]/);
+  assert.match(house, /const pm = presetMonth \|\| previousRentPeriod\(\)/);
+  assert.doesNotMatch(house, /nextUnpaid/);
+});
+
+test('changing a new collection date recalculates the previous rent month', () => {
+  assert.match(house, /previousRentPeriod\(v\.date\)/);
+  assert.match(payments, /previousRentPeriod\(v\.date\)/);
+  assert.match(payments, /previousRentPeriod\(event\.target\.value\)/);
 });

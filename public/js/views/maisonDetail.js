@@ -73,11 +73,6 @@ function feeValues(raw) {
   return values;
 }
 
-// Premier mois encore impaye (pour pre-remplir l'encaissement).
-function nextUnpaid(s) {
-  return (s.echeancier || []).find((m) => m.reste > 0) || null;
-}
-
 export async function render() {
   const hashParams = new URLSearchParams(location.hash.split('?')[1] || '');
   const id = hashParams.get('id');
@@ -105,7 +100,7 @@ export async function render() {
   // Encaisser un loyer pour un bail, depuis la maison. presetMonth = échéance ciblée.
   function openEncaisser(s, presetMonth) {
     const loyer = s.montant_loyer || 0;
-    const pm = presetMonth || nextUnpaid(s) || previousRentPeriod();
+    const pm = presetMonth || previousRentPeriod();
     formModal({
       title: 'Encaisser un loyer — ' + (s.tenant_nom || ''),
       fields: [
@@ -124,6 +119,12 @@ export async function render() {
         // (cas d'un encaissement anticipé d'un mois « à échoir »).
         montant_paye: pm.reste ? pm.reste : loyer,
         date: fmt.today(),
+      },
+      onChange: (v, changed, set) => {
+        if (changed !== 'date' || presetMonth || !v.date) return;
+        const period = previousRentPeriod(v.date);
+        set('mois_concerne', period.mois);
+        set('annee_concernee', period.annee);
       },
       onSubmit: async (v) => {
         await api.post('/api/payments', { subscription_id: s.id, montant_a_payer: loyer, ...v });

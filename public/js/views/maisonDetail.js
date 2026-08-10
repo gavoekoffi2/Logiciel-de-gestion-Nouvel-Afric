@@ -1,5 +1,5 @@
 import { api, icon, el, escapeHtml, dataTable, badge, fmt, pageHeader, formModal, openModal, confirmDialog, toast, MOIS } from '../core.js';
-import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText } from '../periodControls.js';
+import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText, previousRentPeriod } from '../periodControls.js';
 
 function miniStat(label, value, danger) {
   return `<div style="background:#f8fafc;border:1px solid #eef2f6;border-radius:12px;padding:12px">
@@ -105,20 +105,20 @@ export async function render() {
   // Encaisser un loyer pour un bail, depuis la maison. presetMonth = échéance ciblée.
   function openEncaisser(s, presetMonth) {
     const loyer = s.montant_loyer || 0;
-    const pm = presetMonth || nextUnpaid(s) || {};
+    const pm = presetMonth || nextUnpaid(s) || previousRentPeriod();
     formModal({
       title: 'Encaisser un loyer — ' + (s.tenant_nom || ''),
       fields: [
-        { name: 'mois_concerne', label: 'Mois concerné', type: 'select', required: true, options: MOIS },
+        { name: 'mois_concerne', label: 'Mois de loyer réglé', type: 'select', required: true, options: MOIS, hint: 'Par défaut : le mois précédent, déjà consommé.' },
         { name: 'annee_concernee', label: 'Année concernée', type: 'number', required: true },
         { name: 'montant_a_payer', label: 'Montant à payer', type: 'number', readonly: true },
         { name: 'montant_paye', label: 'Montant payé', type: 'number', required: true, min: 0 },
-        { name: 'date', label: 'Date du paiement', type: 'date' },
+        { name: 'date', label: "Date réelle d'encaissement", type: 'date' },
         { name: 'numero_recu', label: 'N° de reçu', placeholder: 'ex. 269' },
       ],
       values: {
-        mois_concerne: pm.mois || MOIS[new Date().getMonth()],
-        annee_concernee: pm.annee || new Date().getFullYear(),
+        mois_concerne: pm.mois,
+        annee_concernee: pm.annee,
         montant_a_payer: loyer,
         // Reste dû si le mois est partiellement/non payé, sinon le loyer plein
         // (cas d'un encaissement anticipé d'un mois « à échoir »).
@@ -380,7 +380,7 @@ export async function render() {
         columns: [
           { label: 'Période', render: (m) => escapeHtml(filteredPeriodText(m)) },
           { label: 'Payé', num: true, render: (m) => fmt.money(m.montant_paye) },
-          { label: 'Date', render: (m) => fmt.date(m.date) },
+          { label: "Date d'encaissement", render: (m) => fmt.date(m.date) },
           { label: 'Statut', render: (m) => badge(m.statut, m.statut === 'Soldé' ? 'green' : 'red') },
         ],
         rows: s.paiements,
@@ -509,7 +509,7 @@ export async function render() {
       { label: 'Reçu', render: (r) => r.numero_recu ? escapeHtml(r.numero_recu) : codeCellFallback(r.code) },
       { label: 'Locataire', render: (r) => escapeHtml(r.tenant_nom || '—') },
       { label: 'Période', render: (r) => escapeHtml(filteredPeriodText(r)) },
-      { label: 'Date', render: (r) => fmt.date(r.date) },
+      { label: "Date d'encaissement", render: (r) => fmt.date(r.date) },
       { label: 'À payer', num: true, render: (r) => fmt.money(r.montant_a_payer) },
       { label: 'Payé', num: true, render: (r) => fmt.money(r.montant_paye) },
       { label: 'Reste', num: true, render: (r) => (r.reste_a_payer > 0 ? `<b style="color:#b91c1c">${fmt.money(r.reste_a_payer)}</b>` : fmt.money(0)) },

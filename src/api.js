@@ -19,6 +19,7 @@ const { requireRole, publicUser, companyState } = require('./auth');
 const { isNoSubscriptionCompanyName } = require('./companyPolicy');
 const { normalizePaidMonths, parsePeriods, buildPaidMonthMap, summarizeRecoveryMonths } = require('./paymentPeriods');
 const { normalizeRange, periodInRange, paymentAmountsInRange, rangeLabel } = require('./periodRange');
+const { previousRentPeriod } = require('./rentCycle');
 
 const router = express.Router();
 const settingsRouter = express.Router();
@@ -1230,8 +1231,12 @@ async function paymentPayload(body, companyId) {
   }
 
   const montant_paye = toInt(body.montant_paye);
+  const paymentDate = clean(body.date) || new Date().toISOString().slice(0, 10);
+  const defaultPeriod = previousRentPeriod(paymentDate);
   const normalized = normalizePaidMonths({
     ...body,
+    mois_concerne: clean(body.mois_concerne) || defaultPeriod.mois,
+    annee_concernee: toInt(body.annee_concernee) || defaultPeriod.annee,
     montant_a_payer,
     montant_paye,
     loyer: montant_loyer_unitaire || undefined,
@@ -1242,7 +1247,7 @@ async function paymentPayload(body, companyId) {
     subscription_id,
     property_id,
     tenant_id,
-    date: clean(body.date),
+    date: paymentDate,
     montant_a_payer: normalized.amountDue,
     montant_paye,
     reste_a_payer: reste,
@@ -1314,11 +1319,12 @@ router.delete('/payments/:id', wrap(async (req, res) => {
 // Encaissement multiple : enregistre le loyer du mois pour plusieurs souscriptions.
 router.post('/payments/bulk', wrap(async (req, res) => {
   const cid = req.companyId;
-  const date = clean(req.body.date);
-  const mois = clean(req.body.mois);
-  const annee = toInt(req.body.annee);
+  const date = clean(req.body.date) || new Date().toISOString().slice(0, 10);
+  const defaultPeriod = previousRentPeriod(date);
+  const mois = clean(req.body.mois) || defaultPeriod.mois;
+  const annee = toInt(req.body.annee) || defaultPeriod.annee;
   const ids = Array.isArray(req.body.subscription_ids) ? req.body.subscription_ids.map(toInt) : [];
-  if (!mois || !annee) return res.status(400).json({ error: 'Mois et année concernés requis.' });
+
   if (ids.length === 0) return res.status(400).json({ error: 'Veuillez sélectionner au moins une souscription.' });
 
   let crees = 0;

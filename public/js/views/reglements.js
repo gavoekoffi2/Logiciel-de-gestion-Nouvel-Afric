@@ -1,13 +1,11 @@
 import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, fmt, MOIS, montantEnLettres, pageHeader, printDocument, docHeader, openModal, store, codeCell } from '../core.js';
-import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText } from '../periodControls.js';
+import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText, previousRentPeriod } from '../periodControls.js';
 
 const anneeCourante = new Date().getFullYear();
-const moisCourant = MOIS[new Date().getMonth()];
+
 // Location a terme echu : le mois que l'on encaisse par defaut est le mois
 // PRECEDENT (ex. en juillet, on encaisse le loyer de juin).
-const _echu = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
-const moisEchu = MOIS[_echu.getMonth()];
-const anneeEchu = _echu.getFullYear();
+const { mois: moisEchu, annee: anneeEchu } = previousRentPeriod();
 const PAYMENT_TOLERANCE = 1;
 
 function parseMonthText(txt, year) {
@@ -74,7 +72,7 @@ export async function render() {
         { label: 'Payé', num: true, render: (r) => fmt.money(r.montant_paye) },
         { label: 'Reste', num: true, render: (r) => r.reste_a_payer > 0 ? `<span style="color:#b91c1c;font-weight:700">${fmt.money(r.reste_a_payer)}</span>` : fmt.money(0) },
         { label: 'Statut', render: (r) => badge(r.statut, r.statut === 'Soldé' ? 'green' : 'red') },
-        { label: 'Date', render: (r) => fmt.date(r.date) },
+        { label: "Date d'encaissement", render: (r) => fmt.date(r.date) },
       ],
       rows,
       actions: [
@@ -106,12 +104,12 @@ export async function render() {
         { name: 'montant_paye', label: 'Montant payé', type: 'number', required: true, min: 0 },
         { name: 'reste_a_payer', label: 'Reste à payer', type: 'number', readonly: true },
         { name: 'annee_concernee', label: 'Année concernée', type: 'number', required: true },
-        { name: 'mois_payes_txt', label: 'Mois payés (séparer par virgule)', required: true, col: 2, placeholder: 'ex. Janvier, Février' },
+        { name: 'mois_payes_txt', label: 'Mois de loyer réglé(s) (séparer par virgule)', required: true, col: 2, placeholder: 'ex. Janvier, Février', hint: 'Par défaut : le mois précédent, déjà consommé.' },
         { name: 'nombre_mois_payes', label: 'Nombre de mois payés', type: 'number', readonly: true },
         { name: 'mois_dus_txt', label: 'Mois encore dûs après ce paiement', col: 2, placeholder: 'ex. Mars, Avril' },
         { name: 'nombre_mois_dus', label: 'Nombre de mois dûs', type: 'number', readonly: true },
         { name: 'mois_concerne', label: 'Premier mois payé', type: 'hidden' },
-        { name: 'date', label: 'Date du paiement', type: 'date' },
+        { name: 'date', label: "Date réelle d'encaissement", type: 'date' },
         { name: 'numero_recu', label: 'N° de reçu', placeholder: 'ex. 269' },
       ],
       values: row
@@ -123,7 +121,7 @@ export async function render() {
           if (s) {
             set('_bien', s.property_code || '');
             set('_locataire', s.tenant_nom || '');
-            const paidCount = parseMonthText(v.mois_payes_txt || moisCourant, v.annee_concernee).length || 1;
+            const paidCount = parseMonthText(v.mois_payes_txt || moisEchu, v.annee_concernee).length || 1;
             set('montant_a_payer', s.montant_loyer * paidCount);
             set('montant_paye', s.montant_loyer * paidCount);
             v.montant_a_payer = s.montant_loyer * paidCount; v.montant_paye = s.montant_loyer * paidCount;
@@ -184,11 +182,11 @@ export async function render() {
       <div class="modal-body">
         <div id="bulkErr" class="alert alert-error" style="display:none"></div>
         <div class="form-grid">
-          <div class="field"><label>Mois concerné <span class="req">*</span></label>
+          <div class="field"><label>Mois de loyer réglé <span class="req">*</span></label>
             <select id="bMois">${MOIS.map((m) => `<option${m === moisEchu ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
           <div class="field"><label>Année concernée <span class="req">*</span></label>
             <input type="number" id="bAnnee" value="${anneeEchu}" /></div>
-          <div class="field col-2"><label>Date du paiement</label><input type="date" id="bDate" value="${fmt.today()}" /></div>
+          <div class="field col-2"><label>Date réelle d'encaissement</label><input type="date" id="bDate" value="${fmt.today()}" /></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0 8px">
           <b>Souscriptions actives (${active.length})</b>
@@ -260,6 +258,7 @@ export async function printRecu(id) {
       <tr class="montant-fort"><td class="k"><b>Montant payé par le locataire</b></td><td class="v">${fmt.money(r.montant_paye)}</td></tr>
       ${row('Montant en lettres', `<span class="lettres">${escapeHtml(capitalize(montantEnLettres(r.montant_paye)))} franc(s) CFA</span>`)}
       ${row('Mois payés', `${r.nombre_mois_payes || 1} mois — ${escapeHtml(monthListText(r.mois_payes, r.mois_concerne, r.annee_concernee))}`)}
+      ${row("Date réelle d'encaissement", fmt.date(r.date))}
       ${r.nombre_mois_dus ? row('Mois restant dûs', `${r.nombre_mois_dus} mois — ${escapeHtml(monthListText(r.mois_dus))}`) : ''}
       ${row('Reste à payer', r.reste_a_payer > 0 ? `<b style="color:#b91c1c">${fmt.money(r.reste_a_payer)}</b>` : fmt.money(0))}
     </table>

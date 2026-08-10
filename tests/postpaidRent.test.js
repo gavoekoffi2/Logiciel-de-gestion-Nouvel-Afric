@@ -114,6 +114,33 @@ test('current (in-progress) month is « À échoir » and never counts as unpaid
   });
 });
 
+test('an August collection without an explicit rent month is recorded for July', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, subscription } = await setupProperty(baseUrl);
+    const payment = await request(baseUrl, 'POST', '/api/payments', {
+      subscription_id: subscription.id,
+      montant_a_payer: 50000,
+      montant_paye: 50000,
+      date: '2026-08-05',
+    }, cookie);
+
+    assert.equal(payment.res.status, 200, JSON.stringify(payment.data));
+    assert.equal(payment.data.date, '2026-08-05');
+    assert.equal(payment.data.mois_concerne, 'Juillet');
+    assert.equal(payment.data.annee_concernee, 2026);
+    assert.deepEqual(JSON.parse(payment.data.mois_payes), [{ mois: 'Juillet', annee: 2026 }]);
+
+    const july = await request(baseUrl, 'GET', '/api/payments?mode=month&from=2026-07&to=2026-07', undefined, cookie);
+    const august = await request(baseUrl, 'GET', '/api/payments?mode=month&from=2026-08&to=2026-08', undefined, cookie);
+    assert.equal(july.res.status, 200);
+    assert.equal(july.data.length, 1);
+    assert.equal(july.data[0].date, '2026-08-05');
+    assert.equal(july.data[0].mois_concerne, 'Juillet');
+    assert.equal(august.res.status, 200);
+    assert.equal(august.data.length, 0);
+  });
+});
+
 test('a departed tenant frees the property while keeping the history', async () => {
   await withServer(async (baseUrl) => {
     const { cookie, property, subscription } = await setupProperty(baseUrl);

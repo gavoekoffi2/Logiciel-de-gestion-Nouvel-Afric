@@ -1,4 +1,5 @@
 const pad = (n) => String(n).padStart(2, '0');
+const RENT_MONTHS = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
 const VALID_MODES = new Set(['current', 'month', 'range', 'ytd', 'all']);
 const safeMonth = (value) => {
   const text = String(value || '');
@@ -7,6 +8,15 @@ const safeMonth = (value) => {
 
 export function currentMonthValue(ref = new Date()) {
   return `${ref.getFullYear()}-${pad(ref.getMonth() + 1)}`;
+}
+
+export function previousRentPeriod(ref = new Date()) {
+  const previous = new Date(ref.getFullYear(), ref.getMonth() - 1, 1);
+  return {
+    mois: RENT_MONTHS[previous.getMonth()],
+    annee: previous.getFullYear(),
+    value: `${previous.getFullYear()}-${pad(previous.getMonth() + 1)}`,
+  };
 }
 
 export function periodState(params, defaultMode = 'current') {

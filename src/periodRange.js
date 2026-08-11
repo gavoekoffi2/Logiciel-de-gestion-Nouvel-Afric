@@ -1,6 +1,7 @@
 'use strict';
 
 const { MOIS, parsePeriods } = require('./paymentPeriods');
+const { lastDuePeriod } = require('./rentCycle');
 
 function toInt(value) {
   const n = Number(value);
@@ -23,15 +24,32 @@ function monthValue(period) {
   return `${year}-${String(monthNumber).padStart(2, '0')}`;
 }
 
-function currentMonthValue(ref = new Date()) {
-  return `${ref.getFullYear()}-${String(ref.getMonth() + 1).padStart(2, '0')}`;
+// Location a terme echu : la « periode courante » d'un ecran de gestion locative
+// n'est pas le mois civil en cours (dont le loyer n'est pas encore exigible)
+// mais le dernier mois de loyer EXIGIBLE, c'est-a-dire le mois precedent.
+function dueMonthValue(ref = new Date()) {
+  return lastDuePeriod(ref).value;
 }
 
 function normalizeRange(query = {}, defaults = {}) {
   const ref = defaults.ref instanceof Date ? defaults.ref : new Date();
   const mode = String(query.mode || defaults.mode || 'current').trim();
+  const due = lastDuePeriod(ref);
   let fromValue = String(query.from || query.debut || '').trim();
   let toValue = String(query.to || query.fin || '').trim();
+
+  // « Mois courant » et « depuis janvier » sont des periodes CALCULEES : quand
+  // le client les demande nommement, le serveur impose ses propres bornes. Un
+  // navigateur laisse ouvert au changement de mois, un signet ou une version
+  // ancienne du JS ne peuvent donc pas afficher une periode contraire a la
+  // regle du terme echu (le mois en cours n'est jamais exigible).
+  if (String(query.mode || '').trim() === 'current') {
+    fromValue = due.value;
+    toValue = due.value;
+  } else if (String(query.mode || '').trim() === 'ytd') {
+    fromValue = `${due.annee}-01`;
+    toValue = due.value;
+  }
 
   if (!fromValue && query.mois && query.annee) {
     const monthNumber = MOIS.indexOf(String(query.mois).trim()) + 1;
@@ -40,15 +58,16 @@ function normalizeRange(query = {}, defaults = {}) {
   if (!toValue && fromValue && (mode === 'month' || mode === 'current')) toValue = fromValue;
 
   if (!fromValue || !toValue) {
-    const current = currentMonthValue(ref);
-    if (mode === 'ytd') {
-      fromValue = `${ref.getFullYear()}-01`;
-      toValue = current;
-    } else if (mode === 'all') {
+    if (mode === 'all') {
       return { mode: 'all', from: null, to: null, fromValue: '', toValue: '', monthCount: null };
+    }
+    if (mode === 'ytd') {
+      fromValue = `${due.annee}-01`;
+      toValue = due.value;
     } else {
-      fromValue = current;
-      toValue = current;
+      // Par defaut : le dernier mois de loyer exigible, jamais le mois en cours.
+      fromValue = due.value;
+      toValue = due.value;
     }
   }
 
@@ -136,7 +155,7 @@ function rangeLabel(range) {
 module.exports = {
   parseMonthValue,
   monthValue,
-  currentMonthValue,
+  dueMonthValue,
   normalizeRange,
   periodIndex,
   periodInRange,

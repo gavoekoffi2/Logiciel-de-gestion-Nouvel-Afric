@@ -1,15 +1,11 @@
 import { api, icon, el, escapeHtml, dataTable, formModal, confirmDialog, toast, badge, fmt, MOIS, montantEnLettres, pageHeader, printDocument, docHeader, openModal, store, codeCell } from '../core.js';
 import { periodState, periodQuery, periodControls, bindPeriodControls, filteredPeriodText, previousRentPeriod } from '../periodControls.js';
 
-const anneeCourante = new Date().getFullYear();
-
-// Location a terme echu : le mois que l'on encaisse par defaut est le mois
-// PRECEDENT (ex. en juillet, on encaisse le loyer de juin).
-const { mois: moisEchu, annee: anneeEchu } = previousRentPeriod();
 const PAYMENT_TOLERANCE = 1;
 
 function parseMonthText(txt, year) {
-  return String(txt || '').split(',').map((m) => m.trim()).filter(Boolean).map((mois) => ({ mois, annee: Number(year) || anneeCourante }));
+  const fallback = previousRentPeriod().annee;
+  return String(txt || '').split(',').map((m) => m.trim()).filter(Boolean).map((mois) => ({ mois, annee: Number(year) || fallback }));
 }
 function monthListText(raw, fallbackMonth, fallbackYear) {
   if (raw) {
@@ -34,6 +30,10 @@ function monthsPayload(v) {
 export async function render() {
   const selectedPeriod = periodState(new URLSearchParams(location.hash.split('?')[1] || ''), 'current');
   const filtre = { q: '', statut: '' };
+  // Location a terme echu : le mois encaisse par defaut est le mois PRECEDENT
+  // (en aout, on encaisse le loyer de juillet). Recalcule a chaque affichage
+  // pour rester juste si l'application reste ouverte au changement de mois.
+  const { mois: moisEchu, annee: anneeEchu } = previousRentPeriod();
 
   const root = el(`
     <div>
@@ -170,9 +170,13 @@ export async function render() {
     const ok = await confirmDialog({ title: 'Supprimer le règlement', danger: true, okLabel: 'Supprimer',
       message: `Supprimer le règlement « ${row.code} » ?` });
     if (!ok) return;
-    await api.del('/api/payments/' + row.id);
-    toast('Règlement supprimé.');
-    load();
+    try {
+      await api.del('/api/payments/' + row.id);
+      toast('Règlement supprimé.');
+      load();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   }
 
   // -------- Encaissement multiple (loyers du mois) --------
@@ -194,7 +198,7 @@ export async function render() {
           <div class="field"><label>Mois de loyer réglé <span class="req">*</span></label>
             <select id="bMois">${MOIS.map((m) => `<option${m === moisEchu ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
           <div class="field"><label>Année concernée <span class="req">*</span></label>
-            <input type="number" id="bAnnee" value="${anneeEchu}" /></div>
+            <input type="number" id="bAnnee" max="${anneeEchu}" value="${anneeEchu}" /></div>
           <div class="field col-2"><label>Date réelle d'encaissement</label><input type="date" id="bDate" value="${fmt.today()}" /></div>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0 8px">
@@ -202,7 +206,10 @@ export async function render() {
           <button type="button" class="btn btn-ghost btn-sm" id="toggleAll">Tout décocher</button>
         </div>
         <div class="checklist" id="bList">${items}</div>
-        <p class="hint">Loyers à terme échu : par défaut, on encaisse le mois précédent (déjà consommé). Un loyer déjà enregistré pour la même période sera automatiquement ignoré (pas de doublon).</p>
+        <p class="hint">Loyers à terme échu : on encaisse le loyer d’un mois une fois ce mois terminé — en
+          ${escapeHtml(MOIS[new Date().getMonth()])}, on recouvre le loyer de <b>${escapeHtml(moisEchu)} ${anneeEchu}</b>.
+          Un mois encore en cours ne peut pas être encaissé en lot, et un loyer déjà enregistré pour la même période est
+          automatiquement ignoré (pas de doublon).</p>
       </div>
       <div class="modal-foot">
         <button class="btn btn-ghost" data-close>Annuler</button>
@@ -210,12 +217,29 @@ export async function render() {
       </div>`, { size: 'lg' });
 
     modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = close; });
+
+    // Seuls les mois deja consommes sont encaissables : on n'affiche jamais un
+    // mois a echoir dans la liste (le serveur le refuserait de toute facon).
+    const moisEl = modal.querySelector('#bMois');
+    const anneeEl = modal.querySelector('#bAnnee');
+    const echuIndex = anneeEchu * 12 + MOIS.indexOf(moisEchu);
+    const syncBulkMonths = (wanted) => {
+      const annee = Number(anneeEl.value) || anneeEchu;
+      const options = MOIS.filter((m, i) => annee * 12 + i <= echuIndex);
+      const selected = options.includes(wanted) ? wanted : options[options.length - 1];
+      moisEl.innerHTML = options.map((m) => `<option${m === selected ? ' selected' : ''}>${m}</option>`).join('');
+    };
+    anneeEl.onchange = () => {
+      if (Number(anneeEl.value) > anneeEchu) anneeEl.value = String(anneeEchu);
+      syncBulkMonths(moisEl.value);
+    };
     modal.querySelector('#bDate').onchange = (event) => {
       if (!event.target.value) return;
       const period = previousRentPeriod(event.target.value);
-      modal.querySelector('#bMois').value = period.mois;
-      modal.querySelector('#bAnnee').value = period.annee;
+      anneeEl.value = String(Math.min(period.annee, anneeEchu));
+      syncBulkMonths(period.mois);
     };
+    syncBulkMonths(moisEchu);
     const toggle = modal.querySelector('#toggleAll');
     toggle.onclick = () => {
       const boxes = modal.querySelectorAll('#bList input[type=checkbox]');

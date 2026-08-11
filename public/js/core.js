@@ -279,6 +279,8 @@ export function formModal({ title, fields, values = {}, size = '', submitLabel =
 // ---------- Tableau de donnees ------------------------------------------
 // columns: { label, render(row)->html|string, num }
 // actions: { title, variant, icon, show(row), onClick(row) }
+// `title` accepte aussi une fonction (row) => texte, pour une infobulle qui
+// depend de la ligne (ex. « encaisser » vs « encaisser par avance »).
 export function dataTable({ columns, rows, actions = [], empty = 'Aucune donnée pour le moment.' }) {
   const wrap = el('<div class="table-wrap"></div>');
   if (!rows || rows.length === 0) {
@@ -305,7 +307,8 @@ export function dataTable({ columns, rows, actions = [], empty = 'Aucune donnée
       const td = el('<td class="actions"></td>');
       actions.forEach((a) => {
         if (a.show && !a.show(row)) return;
-        const b = el(`<button class="btn btn-icon btn-sm ${a.variant || 'btn-ghost'}" title="${escapeHtml(a.title || '')}">${icon(a.icon, 16)}</button>`);
+        const label = typeof a.title === 'function' ? a.title(row) : a.title;
+        const b = el(`<button class="btn btn-icon btn-sm ${a.variant || 'btn-ghost'}" title="${escapeHtml(label || '')}">${icon(a.icon, 16)}</button>`);
         b.onclick = () => a.onClick(row);
         td.appendChild(b);
         td.appendChild(document.createTextNode(' '));

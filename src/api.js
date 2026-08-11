@@ -19,7 +19,10 @@ const { requireRole, publicUser, companyState } = require('./auth');
 const { isNoSubscriptionCompanyName } = require('./companyPolicy');
 const { normalizePaidMonths, parsePeriods, buildPaidMonthMap, summarizeRecoveryMonths } = require('./paymentPeriods');
 const { normalizeRange, periodInRange, paymentAmountsInRange, rangeLabel } = require('./periodRange');
-const { previousRentPeriod } = require('./rentCycle');
+const {
+  previousRentPeriod, lastDuePeriod, clampToDuePeriod, isPeriodDue, isPeriodTooFarAhead,
+  periodIndexOf, MAX_ADVANCE_MONTHS,
+} = require('./rentCycle');
 
 const router = express.Router();
 const settingsRouter = express.Router();
@@ -120,14 +123,12 @@ function monthsUntil(startYMD, ey, em) {
 }
 // Location A TERME ECHU : le loyer d'un mois n'est exigible qu'une fois le mois
 // entierement consomme. Le dernier mois exigible est donc le mois civil PRECEDENT
-// (ex. en juillet, on encaisse le loyer de juin). Renvoie { annee, mois } avec
-// mois en base 1 (1 = Janvier).
+// (ex. en aout, on encaisse le loyer de juillet). La regle est portee par
+// src/rentCycle.js ; on n'expose ici que la forme { annee, mois } (mois en
+// base 1) attendue par les calculs d'echeancier.
 function lastDueYearMonth(ref) {
-  const now = ref ? new Date(ref) : new Date();
-  let annee = now.getFullYear();
-  let mois = now.getMonth(); // mois courant en base 1 = getMonth()+1 ; le precedent = getMonth()
-  if (mois < 1) { mois = 12; annee -= 1; }
-  return { annee, mois };
+  const due = lastDuePeriod(ref || new Date());
+  return { annee: due.annee, mois: due.monthNumber };
 }
 
 function lastDueAtDeparture(dateValue) {
@@ -770,10 +771,31 @@ router.put('/subscriptions/:id/tenant', wrap(async (req, res) => {
 }));
 
 router.delete('/subscriptions/:id', wrap(async (req, res) => {
+  const cid = req.companyId;
   const id = toInt(req.params.id);
-  const row = await db.prepare('SELECT code FROM subscriptions WHERE id = ? AND company_id = ?').get(id, req.companyId);
-  await db.prepare('DELETE FROM subscriptions WHERE id = ? AND company_id = ?').run(id, req.companyId);
-  if (row) await logAction(req, 'Suppression', 'Souscription', row.code);
+  const row = await db.prepare('SELECT code FROM subscriptions WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!row) return res.status(404).json({ error: 'Souscription introuvable.' });
+
+  // Un bail qui porte des encaissements ne peut pas etre supprime : les loyers
+  // deja encaisses perdraient leur rattachement et disparaitraient de l'etat de
+  // recouvrement tout en restant a reverser. La suppression definitive ne sert
+  // qu'a effacer une erreur de saisie ; un vrai depart passe par /depart.
+  // Le controle et la suppression sont dans la meme transaction : un
+  // encaissement concurrent ne peut pas se glisser entre les deux.
+  await db.batch([{
+    sql: `DELETE FROM subscriptions
+          WHERE id = ? AND company_id = ?
+            AND NOT EXISTS (SELECT 1 FROM payments WHERE subscription_id = ? AND company_id = ?)`,
+    args: [id, cid, id, cid],
+  }]);
+  const remaining = await db.prepare('SELECT 1 FROM subscriptions WHERE id = ? AND company_id = ?').get(id, cid);
+  if (remaining) {
+    return res.status(400).json({
+      error: 'Ce bail possède des loyers encaissés : il ne peut pas être supprimé. '
+        + 'Utilisez « Le locataire a quitté » pour le clôturer en conservant l’historique comptable.',
+    });
+  }
+  await logAction(req, 'Suppression', 'Souscription', row.code);
   res.json({ ok: true });
 }));
 
@@ -930,19 +952,18 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     }
 
     const loyer = s.montant_loyer || 0;
-    // Les baux actifs affichent aussi le mois courant (« À échoir »). Les baux
-    // clôturés conservent leur échéancier historique jusqu'au dernier mois dû.
+    // Les baux actifs affichent aussi le mois courant (« À échoir ») : le
+    // locataire le consomme encore, son loyer ne sera exigible que le mois
+    // suivant. Les baux clôturés conservent leur échéancier historique jusqu'au
+    // dernier mois dû.
     let echeancier = [];
     if (s.date_debut_paiement) {
       const now = new Date();
-      const curY = now.getFullYear();
-      const curMi = now.getMonth() + 1;
       const end = subscriptionEndPeriod(s, pays, { includeCurrent: true, ref: now });
       if (end) echeancier = monthsUntil(s.date_debut_paiement, end.annee, end.mois)
         .filter((mm) => periodInRange(mm, range))
         .map((mm) => {
-          const mi = MOIS.indexOf(mm.mois) + 1;
-          const echu = mm.annee < curY || (mm.annee === curY && mi < curMi);
+          const echu = isPeriodDue(mm, now);
           const paye = paidBy[`${mm.annee}-${mm.mois}`] || 0;
           const diff = loyer - paye;
           const resteReel = diff > PAYMENT_TOLERANCE ? diff : 0;
@@ -1048,11 +1069,19 @@ router.get('/recouvrement', wrap(async (req, res) => {
   const cid = req.companyId;
   // Par defaut, on presente le dernier mois EXIGIBLE (mois precedent), puisque
   // les loyers se paient a terme echu.
-  const due = lastDueYearMonth();
-  const moisSel = clean(req.query.mois) || MOIS[due.mois - 1];
-  const anneeSel = toInt(req.query.annee) || due.annee;
-  const emIndex = MOIS.indexOf(moisSel) + 1;
-  if (emIndex < 1) return res.status(400).json({ error: 'Mois invalide.' });
+  const due = lastDuePeriod();
+  const moisDemande = clean(req.query.mois) || due.mois;
+  const anneeDemandee = toInt(req.query.annee) || due.annee;
+  if (MOIS.indexOf(moisDemande) < 0) return res.status(400).json({ error: 'Mois invalide.' });
+
+  // Un etat de recouvrement arrete sur un mois encore en cours reclamerait un
+  // loyer que le locataire n'a pas fini de consommer : on ramene toujours la
+  // periode au dernier mois exigible et on le signale a l'ecran.
+  const periode = clampToDuePeriod({ mois: moisDemande, annee: anneeDemandee });
+  const periodeAjustee = periodIndexOf({ mois: moisDemande, annee: anneeDemandee }) !== periode.index;
+  const moisSel = periode.mois;
+  const anneeSel = periode.annee;
+  const emIndex = periode.monthNumber;
 
   const [subs, pays, reps] = await Promise.all([
     db.prepare(
@@ -1097,8 +1126,10 @@ router.get('/recouvrement', wrap(async (req, res) => {
       if (!historicalEnd) continue;
       if (historicalEnd.annee * 12 + historicalEnd.mois < reportIndex) end = historicalEnd;
     }
+    // Un bail dont aucun mois n'est encore echu (entree ce mois-ci) reste
+    // affiche avec 0 mois du : le faire disparaitre de l'etat laisse croire
+    // a un oubli de saisie.
     const months = monthsUntil(s.date_debut_paiement, end.annee, end.mois);
-    if (!months.length) continue;
     const pe = payBySub.get(s.id) || { paid: new Map(), total: 0, lastRecu: null };
     const summary = summarizeRecoveryMonths(months, pe, loyer);
     const montantDu = summary.montant_du;
@@ -1145,7 +1176,17 @@ router.get('/recouvrement', wrap(async (req, res) => {
   const zonesArr = [...zones.values()].sort((a, b) => a.zone.localeCompare(b.zone));
   zonesArr.forEach((z) => z.maisons.sort((a, b) => (a.code || '').localeCompare(b.code || '')));
 
-  res.json({ mois: moisSel, annee: anneeSel, zones: zonesArr, recap });
+  res.json({
+    mois: moisSel,
+    annee: anneeSel,
+    mois_demande: moisDemande,
+    annee_demandee: anneeDemandee,
+    periode_ajustee: periodeAjustee,
+    mois_exigible: due.mois,
+    annee_exigible: due.annee,
+    zones: zonesArr,
+    recap,
+  });
 }));
 
 // ===========================================================================
@@ -1268,6 +1309,17 @@ function validatePayment(r) {
   if (!r.mois_concerne) return 'Veuillez sélectionner au moins un mois payé.';
   if (!r.annee_concernee) return 'Veuillez saisir l’année concernée.';
   if (!r.montant_paye) return 'Veuillez saisir le montant payé.';
+  // Un locataire peut payer d'avance, mais une periode situee des annees plus
+  // loin traduit toujours une faute de frappe sur l'annee. Non detectee, elle
+  // cree un credit fantome qui fausse le recouvrement pendant des annees.
+  const periods = parsePeriods(r.mois_payes, r.mois_concerne, r.annee_concernee);
+  const tooFar = periods.find((period) => isPeriodTooFarAhead(period));
+  if (tooFar) {
+    const due = lastDuePeriod();
+    return `Période de loyer improbable : ${tooFar.mois} ${tooFar.annee}. `
+      + `Les loyers se recouvrent à terme échu (dernier mois exigible : ${due.mois} ${due.annee}) `
+      + `et l’avance acceptée est limitée à ${MAX_ADVANCE_MONTHS} mois. Vérifiez l’année saisie.`;
+  }
   return null;
 }
 
@@ -1291,6 +1343,15 @@ router.post('/payments', wrap(async (req, res) => {
 router.put('/payments/:id', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
+  const existing = await db.prepare('SELECT payout_id FROM payments WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!existing) return res.status(404).json({ error: 'Règlement introuvable.' });
+  // Modifier un loyer deja reverse fausserait le releve remis au proprietaire
+  // (montants et periodes figes dans le reversement).
+  if (existing.payout_id) {
+    return res.status(400).json({
+      error: 'Ce loyer a déjà été reversé au propriétaire. Annulez d’abord le reversement pour pouvoir le corriger.',
+    });
+  }
   const r = await paymentPayload(req.body, cid);
   const err = validatePayment(r);
   if (err) return res.status(400).json({ error: err });
@@ -1310,13 +1371,22 @@ router.put('/payments/:id', wrap(async (req, res) => {
 
 router.delete('/payments/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
-  const row = await db.prepare('SELECT code FROM payments WHERE id = ? AND company_id = ?').get(id, req.companyId);
+  const row = await db.prepare('SELECT code, payout_id FROM payments WHERE id = ? AND company_id = ?').get(id, req.companyId);
+  if (!row) return res.status(404).json({ error: 'Règlement introuvable.' });
+  // Un loyer deja reverse au proprietaire ne peut pas etre efface : le
+  // reversement resterait a un montant qui ne correspond plus a aucun loyer.
+  if (row.payout_id) {
+    return res.status(400).json({
+      error: 'Ce loyer a déjà été reversé au propriétaire. Annulez d’abord le reversement correspondant.',
+    });
+  }
   await db.prepare('DELETE FROM payments WHERE id = ? AND company_id = ?').run(id, req.companyId);
-  if (row) await logAction(req, 'Suppression', 'Règlement', row.code);
+  await logAction(req, 'Suppression', 'Règlement', row.code);
   res.json({ ok: true });
 }));
 
-// Encaissement multiple : enregistre le loyer du mois pour plusieurs souscriptions.
+// Encaissement multiple : enregistre le loyer d'UN mois deja echu pour
+// plusieurs souscriptions a la fois (campagne de recouvrement mensuelle).
 router.post('/payments/bulk', wrap(async (req, res) => {
   const cid = req.companyId;
   const date = clean(req.body.date) || new Date().toISOString().slice(0, 10);
@@ -1326,15 +1396,31 @@ router.post('/payments/bulk', wrap(async (req, res) => {
   const ids = Array.isArray(req.body.subscription_ids) ? req.body.subscription_ids.map(toInt) : [];
 
   if (ids.length === 0) return res.status(400).json({ error: 'Veuillez sélectionner au moins une souscription.' });
+  if (MOIS.indexOf(mois) < 0 || !annee) return res.status(400).json({ error: 'Période de loyer invalide.' });
+  // Terme echu : une campagne d'encaissement ne peut porter que sur un mois
+  // deja consomme. Reclamer le mois en cours a tous les locataires est
+  // precisement l'erreur que cette regle empeche.
+  if (!isPeriodDue({ mois, annee })) {
+    const due = lastDuePeriod();
+    return res.status(400).json({
+      error: `Le loyer de ${mois} ${annee} n’est pas encore exigible : il ne se recouvre qu’une fois le mois terminé. `
+        + `Dernier mois encaissable : ${due.mois} ${due.annee}.`,
+    });
+  }
 
   let crees = 0;
   let ignores = 0;
   for (const sid of ids) {
     const sub = await db.prepare("SELECT * FROM subscriptions WHERE id = ? AND company_id = ? AND statut='Active'").get(sid, cid);
     if (!sub) { ignores++; continue; }
-    const exist = await db.prepare(
-      'SELECT 1 FROM payments WHERE subscription_id=? AND company_id=? AND mois_concerne=? AND annee_concernee=?'
-    ).get(sid, cid, mois, annee);
+    // Un reglement couvrant plusieurs mois n'est pas detectable via le seul
+    // `mois_concerne` (premier mois paye) : on relit la liste complete des mois
+    // payes, sinon un locataire deja a jour serait encaisse deux fois.
+    const existing = await db.prepare(
+      'SELECT mois_concerne, annee_concernee, mois_payes FROM payments WHERE subscription_id=? AND company_id=?'
+    ).all(sid, cid);
+    const exist = existing.some((p) => parsePeriods(p.mois_payes, p.mois_concerne, p.annee_concernee)
+      .some((period) => clean(period.mois) === mois && toInt(period.annee) === annee));
     if (exist) { ignores++; continue; }
     const code = await genCode('payments', 'R', date);
     await db.prepare(
@@ -1471,26 +1557,42 @@ router.post('/payouts', wrap(async (req, res) => {
     return res.status(400).json({ error: 'Aucun loyer encaissé à reverser pour ce propriétaire.' });
   }
 
-  const loyers = selected.reduce((a, l) => a + l.montant_paye, 0);
-  const commission = selected.reduce((a, l) => a + l.commission, 0);
-  const net = loyers - commission;
-  const dates = selected.map((l) => l.date).filter(Boolean).sort();
   const date = clean(req.body.date) || new Date().toISOString().slice(0, 10);
-
   const code = await genCode('payouts', 'V', date);
   const payoutId = (await db.prepare(
     `INSERT INTO payouts
        (company_id, code, owner_id, date, periode_debut, periode_fin,
         nombre_paiements, montant_loyers, montant_commission, montant_net, note)
      VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-  ).run(
-    cid, code, ownerId, date, dates[0] || null, dates[dates.length - 1] || null,
-    selected.length, loyers, commission, net, clean(req.body.note) || null
-  )).lastInsertRowid;
+  ).run(cid, code, ownerId, date, null, null, 0, 0, 0, 0, clean(req.body.note) || null)).lastInsertRowid;
 
+  // Chaque loyer n'est rattache que s'il est ENCORE libre (payout_id IS NULL).
+  // Sans cette condition, deux reversements valides en meme temps pour le meme
+  // proprietaire se volent les memes loyers : le second ecrase le rattachement
+  // du premier, et l'argent est reverse deux fois.
+  const claimed = [];
   for (const l of selected) {
-    await db.prepare('UPDATE payments SET payout_id = ? WHERE id = ? AND company_id = ?').run(payoutId, l.id, cid);
+    const info = await db.prepare(
+      'UPDATE payments SET payout_id = ? WHERE id = ? AND company_id = ? AND payout_id IS NULL'
+    ).run(payoutId, l.id, cid);
+    if (info.changes > 0) claimed.push(l);
   }
+
+  if (claimed.length === 0) {
+    await db.prepare('DELETE FROM payouts WHERE id = ? AND company_id = ?').run(payoutId, cid);
+    return res.status(409).json({ error: 'Ces loyers viennent d’être reversés par un autre utilisateur. Actualisez la page.' });
+  }
+
+  const loyers = claimed.reduce((a, l) => a + l.montant_paye, 0);
+  const commission = claimed.reduce((a, l) => a + l.commission, 0);
+  const net = loyers - commission;
+  const dates = claimed.map((l) => l.date).filter(Boolean).sort();
+  await db.prepare(
+    `UPDATE payouts SET periode_debut = ?, periode_fin = ?, nombre_paiements = ?,
+       montant_loyers = ?, montant_commission = ?, montant_net = ?
+     WHERE id = ? AND company_id = ?`
+  ).run(dates[0] || null, dates[dates.length - 1] || null, claimed.length, loyers, commission, net, payoutId, cid);
+
   await logAction(req, 'Création', 'Reversement', `${owner.nom_prenoms} — net ${net}`);
   res.json(await db.prepare(`${PAYOUT_SELECT} WHERE v.id = ?`).get(payoutId));
 }));

@@ -15,13 +15,35 @@ mises à jour en temps réel.
 
 | Module | Description |
 |--------|-------------|
-| **Tableau de bord** | Vue d'ensemble : nombre de propriétaires / locataires / biens, biens disponibles ou occupés, total des cautions, avances et loyers encaissés, recouvrement du mois en cours, impayés, derniers paiements. |
+| **Tableau de bord** | Vue d'ensemble : nombre de propriétaires / locataires / biens, biens disponibles ou occupés, total des cautions, avances et loyers encaissés, recouvrement du mois à recouvrer, impayés, derniers paiements. |
 | **Propriétaires** | Ajout, modification, suppression et recherche des propriétaires. |
 | **Maisons / Biens** | Gestion des biens (code généré automatiquement, type, nombre de pièces, loyer, localisation, commission, statut **Disponible / Occupé** calculé automatiquement). |
 | **Locataires** | Gestion des locataires. Dans la fiche d'un bien, on peut **ajouter un locataire** ou, quand un locataire **a quitté** le logement, le **retirer du bien** (le bail est clôturé, l'historique est conservé et le logement redevient disponible). Un bail clôturé peut ensuite être **supprimé définitivement** en cas d'erreur de saisie. |
 | **Souscriptions (baux)** | Mise en location d'un bien : calcul automatique de la **caution** (nb mois × loyer) et de l'**avance**, impression du **contrat de location**. |
 | **Règlements (loyers)** | Enregistrement des paiements (reste à payer et statut **Soldé / Non soldé** automatiques), **impression du reçu** (avec montant en toutes lettres), et **encaissement multiple** pour collecter en une seule fois les loyers du mois. Les loyers se paient **à terme échu** : on encaisse le loyer d'un mois **après** que celui-ci a été consommé (ex. le loyer de juin s'encaisse en juillet). Le **mois en cours** reste « À échoir » et n'est jamais compté comme impayé. |
 | **Paramètres** | Coordonnées de l'entreprise (affichées sur les reçus et contrats) et **gestion des utilisateurs**. |
+
+### 📅 Règle capitale : le loyer se paie **à terme échu**
+
+Le locataire règle un mois de loyer **après** l'avoir consommé : **le loyer de juillet
+se recouvre en août**, celui d'août en septembre, et ainsi de suite.
+
+Toute l'application applique cette règle, sans exception :
+
+- **Dernier mois exigible = le mois civil précédent.** Le mois en cours est affiché
+  « À échoir » : il n'est jamais réclamé, jamais compté en retard, jamais proposé par défaut.
+- **Encaissement.** Le mois proposé est celui qui précède la date d'encaissement
+  (encaissement du 05/08 → loyer de juillet). Changer la date recalcule le mois.
+- **Filtres de période.** « Mois à recouvrer » désigne le mois de loyer exigible, pas le
+  mois du calendrier. Aucun filtre ne peut viser un mois dont le loyer n'est pas encore dû.
+- **État de recouvrement.** Une période demandée au-delà du dernier mois exigible est
+  automatiquement ramenée à ce dernier, et l'écran le signale.
+- **Encaissement groupé.** Une campagne ne peut porter que sur un mois déjà terminé.
+- **Paiement d'avance.** Un locataire qui paie en avance reste enregistrable au cas par cas
+  (le mois apparaît en « crédit ») : on ne le lui réclame simplement jamais.
+
+La règle est portée par un seul fichier, [`src/rentCycle.js`](src/rentCycle.js) — tout calcul
+de « quel mois de loyer est dû aujourd'hui ? » doit passer par lui.
 
 ### Plateforme multi-entreprises (abonnement annuel)
 L'application est une **plateforme** : chaque **entreprise** (agence) crée son propre espace
@@ -163,6 +185,9 @@ serveur local, ou un hébergement web).
 │   ├── db.js              # Base de données (multi-entreprises + abonnements)
 │   ├── auth.js            # Inscription / connexion e-mail / rôles / abonnement
 │   ├── api.js             # Logique métier (API REST, isolée par entreprise)
+│   ├── rentCycle.js       # Loyer à terme échu : quel mois est exigible aujourd'hui
+│   ├── paymentPeriods.js  # Mois payés / dus d'un règlement
+│   ├── periodRange.js     # Filtres de période (mois, plage, depuis janvier…)
 │   └── platform.js        # Espace super-administrateur (gestion des entreprises)
 ├── public/                # Interface (ce que voit l'utilisateur)
 │   ├── login.html         # Connexion par e-mail

@@ -1,6 +1,5 @@
 import { api, icon, el, escapeHtml, fmt, MOIS, pageHeader, printDocument, docHeader, openModal, toast } from '../core.js';
-
-const anneeCourante = new Date().getFullYear();
+import { previousRentPeriod } from '../periodControls.js';
 
 function chip(label, value, danger) {
   return `<div style="background:#f8fafc;border:1px solid #eef2f6;border-radius:10px;padding:10px 12px">
@@ -12,27 +11,34 @@ function chip(label, value, danger) {
 const grid = (inner) => `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">${inner}</div>`;
 
 export async function render() {
-  // Location a terme echu : par defaut, on presente le dernier mois exigible
-  // (le mois precedent), puisqu'on encaisse le loyer apres le mois consomme.
-  const moisEchu = new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
-  const filtre = { mois: MOIS[moisEchu.getMonth()], annee: moisEchu.getFullYear() };
+  // Location a terme echu : le dernier mois EXIGIBLE est le mois precedent
+  // (le loyer de juillet se recouvre en aout). C'est la periode presentee par
+  // defaut, et la periode la plus recente qu'on puisse demander : reclamer un
+  // mois encore en cours reviendrait a facturer un loyer non consomme.
+  const echu = previousRentPeriod();
+  const filtre = { mois: echu.mois, annee: echu.annee };
+  const echuIndex = echu.annee * 12 + MOIS.indexOf(echu.mois);
   const annees = [];
-  for (let a = anneeCourante + 1; a >= anneeCourante - 6; a--) annees.push(a);
+  for (let a = echu.annee; a >= echu.annee - 6; a--) annees.push(a);
+  // Un mois posterieur au dernier mois exigible n'est pas selectionnable.
+  const moisDisponibles = (annee) => MOIS.filter((m, i) => annee * 12 + i <= echuIndex);
 
   const root = el(`
     <div>
       <div class="toolbar">
         <div class="filters">
-          <select id="fMois">${MOIS.map((m) => `<option${m === filtre.mois ? ' selected' : ''}>${m}</option>`).join('')}</select>
+          <select id="fMois">${moisDisponibles(filtre.annee).map((m) => `<option${m === filtre.mois ? ' selected' : ''}>${m}</option>`).join('')}</select>
           <select id="fAnnee">${annees.map((a) => `<option${a === filtre.annee ? ' selected' : ''}>${a}</option>`).join('')}</select>
         </div>
         <div class="spacer"></div>
         <button class="btn btn-ghost" id="printBtn">${icon('print', 16)} Imprimer le rapport</button>
       </div>
+      <div id="avis"></div>
       <div id="recap"></div>
       <div id="zones"></div>
     </div>`);
   pageHeader(root);
+  const avisBox = root.querySelector('#avis');
   const recapBox = root.querySelector('#recap');
   const zonesBox = root.querySelector('#zones');
   let current = null;
@@ -41,6 +47,16 @@ export async function render() {
     recapBox.innerHTML = '<div class="spinner"></div>';
     zonesBox.innerHTML = '';
     current = await api.get(`/api/recouvrement?mois=${encodeURIComponent(filtre.mois)}&annee=${filtre.annee}`);
+    // Le serveur ramene toujours la periode au dernier mois exigible ; on
+    // resynchronise l'ecran pour ne jamais afficher un mois qu'il a refuse.
+    filtre.mois = current.mois;
+    filtre.annee = current.annee;
+    syncMonthOptions();
+    avisBox.innerHTML = current.periode_ajustee
+      ? `<div class="alert alert-info" style="margin-bottom:14px">Loyers à terme échu : le loyer de
+         ${escapeHtml(current.mois_demande)} ${current.annee_demandee} n’est pas encore exigible.
+         L’état affiché est arrêté au dernier mois échu, <b>${escapeHtml(current.mois)} ${current.annee}</b>.</div>`
+      : '';
     renderRecap(current);
     zonesBox.innerHTML = '';
     if (!current.zones.length) {
@@ -179,8 +195,24 @@ export async function render() {
     };
   }
 
-  root.querySelector('#fMois').onchange = (e) => { filtre.mois = e.target.value; load(); };
-  root.querySelector('#fAnnee').onchange = (e) => { filtre.annee = Number(e.target.value); load(); };
+  const moisEl = root.querySelector('#fMois');
+  const anneeEl = root.querySelector('#fAnnee');
+
+  // Les mois proposes dependent de l'annee choisie : sur l'annee en cours, on
+  // s'arrete au dernier mois echu.
+  function syncMonthOptions() {
+    const options = moisDisponibles(filtre.annee);
+    if (!options.includes(filtre.mois)) filtre.mois = options[options.length - 1] || echu.mois;
+    moisEl.innerHTML = options.map((m) => `<option${m === filtre.mois ? ' selected' : ''}>${m}</option>`).join('');
+    anneeEl.value = String(filtre.annee);
+  }
+
+  moisEl.onchange = (e) => { filtre.mois = e.target.value; load(); };
+  anneeEl.onchange = (e) => {
+    filtre.annee = Number(e.target.value);
+    syncMonthOptions();
+    load();
+  };
   root.querySelector('#printBtn').onclick = () => { if (current) printReport(current); };
   await load();
 }

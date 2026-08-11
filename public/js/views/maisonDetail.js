@@ -76,7 +76,10 @@ function feeValues(raw) {
 export async function render() {
   const hashParams = new URLSearchParams(location.hash.split('?')[1] || '');
   const id = hashParams.get('id');
-  const selectedPeriod = periodState(hashParams, 'current');
+  // La fiche du bien est un dossier : par defaut elle presente TOUT l'historique
+  // du bail. Restreindre au seul mois en cours de recouvrement masquerait les
+  // mois de retard anterieurs et le total reellement du par le locataire.
+  const selectedPeriod = periodState(hashParams, 'all');
   if (!id) { location.hash = '#/maisons'; return; }
 
   const content = document.getElementById('content');
@@ -101,10 +104,14 @@ export async function render() {
   function openEncaisser(s, presetMonth) {
     const loyer = s.montant_loyer || 0;
     const pm = presetMonth || previousRentPeriod();
+    const avance = presetMonth && presetMonth.echu === false;
     formModal({
-      title: 'Encaisser un loyer — ' + (s.tenant_nom || ''),
+      title: (avance ? 'Encaisser par avance — ' : 'Encaisser un loyer — ') + (s.tenant_nom || ''),
       fields: [
-        { name: 'mois_concerne', label: 'Mois de loyer réglé', type: 'select', required: true, options: MOIS, hint: 'Par défaut : le mois précédent, déjà consommé.' },
+        { name: 'mois_concerne', label: 'Mois de loyer réglé', type: 'select', required: true, options: MOIS,
+          hint: avance
+            ? 'Ce mois n’est pas terminé : il s’agit d’un paiement anticipé, il n’est pas réclamé au locataire.'
+            : 'Loyers à terme échu : par défaut, le mois précédent, déjà consommé.' },
         { name: 'annee_concernee', label: 'Année concernée', type: 'number', required: true },
         { name: 'montant_a_payer', label: 'Montant à payer', type: 'number', readonly: true },
         { name: 'montant_paye', label: 'Montant payé', type: 'number', required: true, min: 0 },
@@ -159,9 +166,13 @@ export async function render() {
       message: `Supprimer cette dépense de ${fmt.money(row.montant)} ?`,
     });
     if (!ok) return;
-    await api.del('/api/repairs/' + row.id);
-    toast('Dépense supprimée.');
-    render();
+    try {
+      await api.del('/api/repairs/' + row.id);
+      toast('Dépense supprimée.');
+      render();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   }
 
   async function openAddTenants() {
@@ -294,9 +305,13 @@ export async function render() {
       message: `Confirmer que « ${s.tenant_nom || 'ce locataire'} » a quitté ce bien ?\n\nLe bail sera clôturé. L’historique des paiements reste conservé et le logement redevient disponible.`,
     });
     if (!ok) return;
-    await api.post('/api/subscriptions/' + s.id + '/depart', {});
-    toast('Locataire retiré du bien.');
-    render();
+    try {
+      await api.post('/api/subscriptions/' + s.id + '/depart', {});
+      toast('Locataire retiré du bien.');
+      render();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   }
 
   // Suppression définitive du bail (erreur de saisie, doublon…).
@@ -306,9 +321,13 @@ export async function render() {
       message: `Supprimer définitivement le bail de « ${s.tenant_nom || 'ce locataire'} » (${s.code}) ?\n\nCette action est irréversible. À n’utiliser qu’en cas d’erreur de saisie.`,
     });
     if (!ok) return;
-    await api.del('/api/subscriptions/' + s.id);
-    toast('Bail supprimé.');
-    render();
+    try {
+      await api.del('/api/subscriptions/' + s.id);
+      toast('Bail supprimé.');
+      render();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   }
 
   function renderSub(s) {
@@ -372,7 +391,13 @@ export async function render() {
         ],
         rows: s.echeancier || [],
         actions: [
-          { title: 'Encaisser ce mois', icon: 'collect', variant: 'btn-accent', show: (m) => m.reste > 0 || !m.echu, onClick: (m) => openEncaisser(s, m) },
+          {
+            title: (m) => (m.echu ? 'Encaisser ce mois' : 'Encaisser par avance (mois non terminé)'),
+            icon: 'collect',
+            variant: 'btn-accent',
+            show: (m) => m.reste > 0 || !m.echu,
+            onClick: (m) => openEncaisser(s, m),
+          },
         ],
         empty: 'Aucune échéance.',
       }));

@@ -56,15 +56,36 @@ async function companyState(companyId) {
 // ---------------------------------------------------------------------------
 // Middlewares
 // ---------------------------------------------------------------------------
-function requireAuth(req, res, next) {
-  if (req.session && req.session.userId) {
-    req.userId = req.session.userId;
-    req.userRole = req.session.role;
-    req.companyId = req.session.companyId || null;
-    req.userNom = req.session.userNom || null;
+// Le cookie de session prouve QUI s'est connecte, jamais CE QU'IL A LE DROIT DE
+// FAIRE : role, entreprise et etat du compte sont relus en base a chaque appel.
+// Sans cela, un compte desactive, supprime ou retrograde garderait tous ses
+// droits jusqu'a l'expiration du cookie (12 h) — l'administrateur qui coupe
+// l'acces d'un employe croirait l'avoir coupe alors qu'il ne l'est pas.
+async function requireAuth(req, res, next) {
+  try {
+    if (!req.session || !req.session.userId) {
+      return res.status(401).json({ error: 'Non authentifié' });
+    }
+    const user = await db.prepare(
+      'SELECT id, email, nom, role, company_id, actif FROM users WHERE id = ?'
+    ).get(req.session.userId);
+    if (!user || !user.actif) {
+      req.session = null;
+      return res.status(401).json({ error: 'Votre accès a été désactivé. Contactez votre administrateur.' });
+    }
+    req.userId = user.id;
+    req.userRole = user.role;
+    req.companyId = user.company_id || null;
+    req.userNom = user.nom || user.email || null;
+    // La session suit l'etat reel (role modifie, entreprise reattribuee).
+    req.session.role = user.role;
+    req.session.companyId = user.company_id || null;
+    req.session.userNom = req.userNom;
     return next();
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Erreur serveur' });
   }
-  return res.status(401).json({ error: 'Non authentifié' });
 }
 
 function requireSuperadmin(req, res, next) {
@@ -125,14 +146,29 @@ router.post('/register', async (req, res) => {
     const illimite = noSubscriptionValueForCompany(entreprise);
     const statut = illimite ? 'actif' : 'essai';
     const essaiFin = illimite ? null : addDaysYMD(TRIAL_DAYS);
-    const companyId = (await db.prepare(
-      `INSERT INTO companies (nom, telephone, email, devise, plan, statut, essai_fin, illimite)
-       VALUES (?,?,?, 'FCFA', 'annuel', ?, ?, ?)`
-    ).run(entreprise, telephone, email, statut, essaiFin, illimite)).lastInsertRowid;
-
-    const userId = (await db.prepare(
-      "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'admin', ?)"
-    ).run(email, email, hashPassword(password), nom, companyId)).lastInsertRowid;
+    // L'entreprise et son administrateur sont crees dans la MEME transaction :
+    // si le compte echoue (e-mail pris entre-temps), aucune entreprise fantome
+    // sans administrateur ne reste en base.
+    let companyId;
+    let userId;
+    try {
+      const results = await db.batch([
+        {
+          sql: `INSERT INTO companies (nom, telephone, email, devise, plan, statut, essai_fin, illimite)
+                VALUES (?,?,?, 'FCFA', 'annuel', ?, ?, ?)`,
+          args: [entreprise, telephone, email, statut, essaiFin, illimite],
+        },
+        {
+          sql: `INSERT INTO users (username, email, password, nom, role, company_id)
+                VALUES (?, ?, ?, ?, 'admin', last_insert_rowid())`,
+          args: [email, email, hashPassword(password), nom],
+        },
+      ]);
+      companyId = Number(results[0].lastInsertRowid);
+      userId = Number(results[1].lastInsertRowid);
+    } catch (e) {
+      return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée.' });
+    }
 
     req.session.userId = userId;
     req.session.role = 'admin';
@@ -184,7 +220,12 @@ router.get('/me', async (req, res) => {
     return res.status(401).json({ error: 'Non authentifié' });
   }
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
-  if (!user) return res.status(401).json({ error: 'Non authentifié' });
+  // Compte supprime ou desactive pendant que la session etait ouverte : on
+  // ferme la session au lieu de laisser l'application s'ouvrir normalement.
+  if (!user || !user.actif) {
+    req.session = null;
+    return res.status(401).json({ error: 'Non authentifié' });
+  }
   const company = user.role === 'superadmin' ? null : await companyState(user.company_id);
   res.json({ user: publicUser(user), company });
 });

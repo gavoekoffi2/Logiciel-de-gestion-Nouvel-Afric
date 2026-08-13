@@ -136,10 +136,14 @@ export async function render() {
       const btn = modal.querySelector('#revOk');
       btn.disabled = true;
       try {
+        // On reverse EXACTEMENT les loyers affichés dans ce tableau. Sans cette
+        // liste, un encaissement enregistré entre-temps par un collègue serait
+        // inclus en silence et le montant reversé dépasserait celui validé.
         const saved = await api.post('/api/payouts', {
           owner_id: ownerId,
           date: modal.querySelector('#revDate').value,
           note: modal.querySelector('#revNote').value,
+          payment_ids: data.lignes.map((l) => l.id),
         });
         close();
         toast('Reversement enregistré.');

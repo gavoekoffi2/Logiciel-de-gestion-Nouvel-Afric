@@ -158,7 +158,11 @@ export async function render() {
         <td style="padding:6px;border-bottom:1px solid #eef2f6;text-align:right">${fmt.money(x.montant)}</td>
         <td style="padding:6px;border-bottom:1px solid #eef2f6;text-align:right"><button class="btn btn-icon btn-sm btn-ghost" data-del="${x.id}" title="Supprimer">${icon('trash', 15)}</button></td>
       </tr>`).join('');
-    const { overlay, close, modal } = openModal(`
+    // `changed` est lu par onClose : quel que soit le mode de fermeture (bouton,
+    // clic à côté, Échap), l'état de recouvrement est rechargé si une
+    // réparation a été ajoutée ou supprimée.
+    let changed = false;
+    const { close, modal } = openModal(`
       <div class="modal-head"><h3>Réparations — ${escapeHtml(m.code)} (${escapeHtml(filtre.mois)} ${filtre.annee})</h3><button class="close" data-close>&times;</button></div>
       <div class="modal-body">
         <div id="repErr" class="alert alert-error" style="display:none"></div>
@@ -174,14 +178,21 @@ export async function render() {
       <div class="modal-foot">
         <button class="btn btn-ghost" data-close>Fermer</button>
         <button class="btn btn-primary" id="repAdd">${icon('plus', 15)} Ajouter</button>
-      </div>`, { size: 'lg' });
+      </div>`, { size: 'lg', onClose: () => { if (changed) load(); } });
 
-    let changed = false;
-    const finish = () => { close(); if (changed) load(); };
-    modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = finish; });
-    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) finish(); });
+    modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = () => close(); });
     modal.querySelectorAll('[data-del]').forEach((b) => {
-      b.onclick = async () => { await api.del('/api/repairs/' + b.getAttribute('data-del')); changed = true; toast('Réparation supprimée.'); close(); load(); };
+      b.onclick = async () => {
+        try {
+          await api.del('/api/repairs/' + b.getAttribute('data-del'));
+          changed = true;
+          toast('Réparation supprimée.');
+          close();
+        } catch (e) {
+          const err = modal.querySelector('#repErr');
+          err.textContent = e.message; err.style.display = 'block';
+        }
+      };
     });
     modal.querySelector('#repAdd').onclick = async () => {
       const montant = Number(modal.querySelector('#repMontant').value);
@@ -190,7 +201,7 @@ export async function render() {
       if (!montant || montant <= 0) { err.textContent = 'Veuillez saisir le montant.'; err.style.display = 'block'; return; }
       try {
         await api.post('/api/repairs', { property_id: m.property_id, mois: filtre.mois, annee: filtre.annee, montant, description });
-        changed = true; toast('Réparation ajoutée.'); close(); load();
+        changed = true; toast('Réparation ajoutée.'); close();
       } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
     };
   }

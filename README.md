@@ -97,11 +97,13 @@ automatiquement au premier lancement :
 
 | E-mail | Mot de passe |
 |--------|--------------|
-| `superadmin@nouvelafric.tg` | `SuperAdmin2025` |
+| `superadmin@nouvelafric.tg` | `SuperAdmin2025` (hors production uniquement) |
 
 > ⚠️ **Changez ce mot de passe** dès la première connexion (menu **Mon compte**).
-> En production, définissez plutôt `SUPERADMIN_EMAIL` et `SUPERADMIN_PASSWORD`
-> (voir la section Configuration) pour utiliser vos propres identifiants.
+> En production (`NODE_ENV=production`), ce mot de passe de démonstration n'est **jamais**
+> utilisé : définissez `SUPERADMIN_EMAIL` et `SUPERADMIN_PASSWORD` (voir la section
+> Configuration), ou laissez l'application en générer un — il s'affiche alors **une seule
+> fois** dans les journaux du premier démarrage.
 
 Depuis l'espace **Plateforme**, renseignez vos **coordonnées** (téléphone, WhatsApp,
 e-mail) et le **tarif annuel** : ils s'afficheront aux entreprises pour qu'elles
@@ -151,16 +153,30 @@ Variables d'environnement possibles au démarrage :
 |----------|------|--------|
 | `PORT` | Port d'écoute | `3000` |
 | `HOST` | Adresse d'écoute | `0.0.0.0` (tout le réseau) |
-| `SESSION_SECRET` | Clé de sécurité des sessions | générée au démarrage |
+| `SESSION_SECRET` | Clé de signature des sessions | générée une fois et **conservée en base** |
 | `DB_PATH` | Emplacement du fichier de base (mode local) | `data/nouvelafric.db` |
 | `TURSO_DATABASE_URL` | Active la base en ligne Turso (sinon fichier local) | *(non défini)* |
 | `TURSO_AUTH_TOKEN` | Jeton d'accès à la base Turso | *(non défini)* |
 | `SUPERADMIN_EMAIL` | E-mail du super-administrateur (créé au 1er lancement) | `superadmin@nouvelafric.tg` |
-| `SUPERADMIN_PASSWORD` | Mot de passe initial du super-administrateur | `SuperAdmin2025` |
+| `SUPERADMIN_PASSWORD` | Mot de passe initial du super-administrateur | aléatoire en production, `SuperAdmin2025` sinon |
 | `TRIAL_DAYS` | Durée de l'essai gratuit (en jours) | `14` |
 
 Exemple (Windows) : `set PORT=8080 && npm start`
 Exemple (Linux/Mac) : `PORT=8080 npm start`
+
+### 🔐 À savoir avant une mise en production
+
+- **`SUPERADMIN_PASSWORD`** : le super-administrateur voit **toutes** les entreprises.
+  En production (`NODE_ENV=production`), si la variable n'est pas définie, un mot de passe
+  aléatoire est généré au tout premier lancement et **affiché une seule fois** dans les
+  journaux de démarrage — notez-le. Hors production, le mot de passe de démonstration
+  `SuperAdmin2025` reste utilisé pour faciliter les essais.
+- **`SESSION_SECRET`** : si la variable n'est pas définie, une clé est générée une fois
+  puis conservée en base, afin que les utilisateurs restent connectés après un
+  redéploiement (et, en hébergement serverless, d'une instance à l'autre).
+- **Droits d'accès** : le rôle et l'état d'un compte sont relus en base à **chaque**
+  requête. Désactiver ou supprimer un utilisateur coupe son accès immédiatement, sans
+  attendre l'expiration de sa session.
 
 ---
 

@@ -163,12 +163,20 @@ export async function render() {
   }
 
   async function remove(row) {
-    const ok = await confirmDialog({ title: 'Supprimer la souscription', danger: true, okLabel: 'Supprimer',
-      message: `Supprimer la souscription « ${row.code} » ? Les règlements liés ne seront plus rattachés.` });
+    const ok = await confirmDialog({
+      title: 'Supprimer la souscription', danger: true, okLabel: 'Supprimer',
+      message: `Supprimer définitivement la souscription « ${row.code} » ?\n\n`
+        + 'Possible uniquement si aucun loyer n’y est rattaché. Pour un locataire qui a quitté le bien, '
+        + 'utilisez « Le locataire a quitté » depuis la fiche du bien : l’historique est alors conservé.',
+    });
     if (!ok) return;
-    await api.del('/api/subscriptions/' + row.id);
-    toast('Souscription supprimée.');
-    load();
+    try {
+      await api.del('/api/subscriptions/' + row.id);
+      toast('Souscription supprimée.');
+      load();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   }
 
   root.querySelector('#addBtn').onclick = () => openForm(null);

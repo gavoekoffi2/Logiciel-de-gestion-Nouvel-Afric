@@ -223,10 +223,19 @@ router.post('/companies/:id/users', wrap(async (req, res) => {
   res.json(user);
 }));
 
-// Supprimer une entreprise (et toutes ses donnees).
+// Supprimer une entreprise (et TOUTES ses donnees). L'ordre suit les
+// dependances (enfants d'abord). Oublier une table ici laisserait en base des
+// donnees d'une entreprise supprimee — reversements, reparations et journal
+// d'activite compris.
+const COMPANY_TABLES_DELETE_ORDER = [
+  'audit_log', 'repairs', 'payments', 'payouts', 'subscriptions', 'properties', 'tenants', 'owners', 'users',
+];
+
 router.delete('/companies/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
-  for (const t of ['payments', 'subscriptions', 'properties', 'tenants', 'owners', 'users']) {
+  const company = await db.prepare('SELECT id FROM companies WHERE id = ?').get(id);
+  if (!company) return res.status(404).json({ error: 'Entreprise introuvable.' });
+  for (const t of COMPANY_TABLES_DELETE_ORDER) {
     await db.prepare(`DELETE FROM ${t} WHERE company_id = ?`).run(id);
   }
   await db.prepare('DELETE FROM companies WHERE id = ?').run(id);
@@ -328,11 +337,36 @@ router.get('/backup/export', wrap(async (req, res) => {
 router.post('/backup/import', wrap(async (req, res) => {
   const body = req.body || {};
   const tables = body.tables || body.donnees || null;
-  if (!tables || typeof tables !== 'object') {
+  if (!tables || typeof tables !== 'object' || Array.isArray(tables)) {
     return res.status(400).json({ error: 'Fichier de sauvegarde complet invalide.' });
   }
   if (clean(body.confirmation) !== 'RESTAURER') {
     return res.status(400).json({ error: 'Confirmation requise : saisissez RESTAURER.' });
+  }
+
+  // Cette restauration EFFACE toute la plateforme avant de reinserer. Le
+  // contenu du fichier est donc verifie AVANT la moindre suppression : un
+  // fichier vide, tronque ou d'un autre type effacerait sinon la base entiere
+  // sans rien restaurer.
+  for (const t of FULL_BACKUP_TABLES) {
+    if (tables[t] !== undefined && !Array.isArray(tables[t])) {
+      return res.status(400).json({ error: `Fichier de sauvegarde corrompu : la table « ${t} » est illisible.` });
+    }
+  }
+  const companies = Array.isArray(tables.companies) ? tables.companies : [];
+  const users = Array.isArray(tables.users) ? tables.users : [];
+  if (users.length === 0) {
+    return res.status(400).json({
+      error: 'Ce fichier ne contient aucun compte utilisateur : le restaurer effacerait la plateforme sans rien remettre en place. Vérifiez le fichier choisi.',
+    });
+  }
+  if (!users.some((u) => clean(u && u.role) === 'superadmin')) {
+    return res.status(400).json({
+      error: 'Ce fichier ne contient aucun super-administrateur : il ne s’agit pas d’une sauvegarde complète de la plateforme.',
+    });
+  }
+  if (companies.length === 0 && users.length <= 1) {
+    return res.status(400).json({ error: 'Ce fichier ne contient aucune entreprise à restaurer.' });
   }
 
   const currentSuperadmin = await db.prepare("SELECT * FROM users WHERE id = ? AND role = 'superadmin'").get(req.userId);

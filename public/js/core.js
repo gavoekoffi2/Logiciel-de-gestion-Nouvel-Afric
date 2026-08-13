@@ -168,28 +168,53 @@ export function toast(message, type = 'success') {
 }
 
 // ---------- Modale generique --------------------------------------------
-export function openModal(innerHtml, { size = '' } = {}) {
+// Pile des modales ouvertes. UN SEUL ecouteur clavier est enregistre pour toute
+// l'application et ne ferme que la modale du dessus : un ecouteur par modale
+// s'accumulerait sur le document (fuite memoire) et une seule touche Echap
+// fermerait toutes les modales empilees d'un coup.
+const modalStack = [];
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || modalStack.length === 0) return;
+  modalStack[modalStack.length - 1].close();
+});
+
+// `onClose` est appele QUEL QUE SOIT le mode de fermeture (bouton, clic a cote,
+// touche Echap) : les appelants qui attendent une reponse peuvent donc toujours
+// resoudre leur promesse au lieu de rester en attente indefiniment.
+export function openModal(innerHtml, { size = '', onClose } = {}) {
   const overlay = el(`<div class="modal-overlay"><div class="modal ${size}">${innerHtml}</div></div>`);
   document.body.appendChild(overlay);
-  const close = () => overlay.remove();
+
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    const index = modalStack.indexOf(entry);
+    if (index >= 0) modalStack.splice(index, 1);
+    overlay.remove();
+    if (onClose) onClose();
+  };
+  const entry = { overlay, close };
+  modalStack.push(entry);
+
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
-  document.addEventListener('keydown', function esc(e) {
-    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
-  });
   return { overlay, close, modal: overlay.querySelector('.modal') };
 }
 
 export function confirmDialog({ title = 'Confirmation', message, danger = false, okLabel = 'Confirmer' }) {
   return new Promise((resolve) => {
+    // Les messages de confirmation contiennent des paragraphes : on preserve
+    // les sauts de ligne, sinon tout s'affiche colle sur une seule ligne.
+    const body = escapeHtml(message).replace(/\n/g, '<br>');
     const { overlay, close } = openModal(`
       <div class="modal-head"><h3>${escapeHtml(title)}</h3></div>
-      <div class="modal-body">${escapeHtml(message)}</div>
+      <div class="modal-body">${body}</div>
       <div class="modal-foot">
         <button class="btn btn-ghost" data-no>Annuler</button>
         <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-yes>${escapeHtml(okLabel)}</button>
-      </div>`);
-    overlay.querySelector('[data-no]').onclick = () => { close(); resolve(false); };
-    overlay.querySelector('[data-yes]').onclick = () => { close(); resolve(true); };
+      </div>`, { onClose: () => resolve(false) });
+    overlay.querySelector('[data-no]').onclick = () => { close(); };
+    overlay.querySelector('[data-yes]').onclick = () => { resolve(true); close(); };
   });
 }
 
@@ -222,6 +247,8 @@ export function formModal({ title, fields, values = {}, size = '', submitLabel =
       return `<div class="field${col}"><label>${escapeHtml(f.label)}${req}</label>${input}${f.hint ? `<div class="hint">${escapeHtml(f.hint)}</div>` : ''}</div>`;
     }).join('');
 
+    // Fermeture par la croix, « Annuler », un clic a cote ou Echap : la
+    // promesse se resout a null au lieu de rester en attente indefiniment.
     const { overlay, close, modal } = openModal(`
       <div class="modal-head"><h3>${escapeHtml(title)}</h3><button class="close" data-close>&times;</button></div>
       <form id="modalForm">
@@ -233,7 +260,7 @@ export function formModal({ title, fields, values = {}, size = '', submitLabel =
           <button type="button" class="btn btn-ghost" data-close>Annuler</button>
           <button type="submit" class="btn btn-primary" id="formSubmit">${escapeHtml(submitLabel)}</button>
         </div>
-      </form>`, { size });
+      </form>`, { size, onClose: () => resolve(null) });
 
     const form = modal.querySelector('#modalForm');
     const errBox = modal.querySelector('#formError');
@@ -256,7 +283,7 @@ export function formModal({ title, fields, values = {}, size = '', submitLabel =
       onChange(getValues(), null, setField); // calcul initial
     }
 
-    modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = () => { close(); resolve(null); }; });
+    modal.querySelectorAll('[data-close]').forEach((b) => { b.onclick = () => close(); });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -265,8 +292,8 @@ export function formModal({ title, fields, values = {}, size = '', submitLabel =
       btn.disabled = true; btn.textContent = 'Enregistrement…';
       try {
         const result = onSubmit ? await onSubmit(getValues()) : getValues();
-        close();
         resolve(result ?? getValues());
+        close();
       } catch (err) {
         errBox.textContent = err.message || 'Erreur';
         errBox.style.display = 'block';

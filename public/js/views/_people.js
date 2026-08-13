@@ -67,9 +67,13 @@ export function peopleView({ endpoint, titre, singular, extraFields = [], extraC
         message: `Souhaitez-vous supprimer « ${row.nom_prenoms} » ?`,
       });
       if (!ok) return;
-      await api.del(`/api/${endpoint}/${row.id}`);
-      toast('Suppression effectuée.');
-      load();
+      try {
+        await api.del(`/api/${endpoint}/${row.id}`);
+        toast('Suppression effectuée.');
+        load();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
     }
 
     root.querySelector('#addBtn').onclick = () => openForm(null);

@@ -138,7 +138,8 @@ CREATE TABLE IF NOT EXISTS platform (
   contact_email     TEXT,
   prix_annuel       INTEGER NOT NULL DEFAULT 50000,
   devise            TEXT NOT NULL DEFAULT 'FCFA',
-  message           TEXT
+  message           TEXT,
+  session_secret    TEXT                            -- cle de signature des sessions (cf. ensureSessionSecret)
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -350,6 +351,7 @@ const MIGRATIONS = [
   "ALTER TABLE payments ADD COLUMN nombre_mois_dus INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE payments ADD COLUMN mois_dus TEXT",
   "ALTER TABLE subscriptions ADD COLUMN date_fin TEXT",
+  "ALTER TABLE platform ADD COLUMN session_secret TEXT",
 ];
 
 // ---------------------------------------------------------------------------
@@ -457,11 +459,54 @@ async function seedSuperAdmin() {
   const exists = await db.prepare("SELECT 1 FROM users WHERE role = 'superadmin'").get();
   if (exists) return;
   const email = (process.env.SUPERADMIN_EMAIL || 'superadmin@nouvelafric.tg').trim().toLowerCase();
-  const password = process.env.SUPERADMIN_PASSWORD || 'SuperAdmin2025';
+  // Le super-administrateur voit TOUTES les entreprises. Un mot de passe par
+  // defaut publie dans le code livrerait la plateforme entiere a quiconque
+  // connait le logiciel : en production, on en genere un aleatoire, affiche une
+  // seule fois dans les journaux de demarrage.
+  const provided = process.env.SUPERADMIN_PASSWORD;
+  const generated = !provided && process.env.NODE_ENV === 'production'
+    ? crypto.randomBytes(9).toString('base64url')
+    : null;
+  const password = provided || generated || 'SuperAdmin2025';
   await db.prepare(
     "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'superadmin', NULL)"
   ).run(email, email, hashPassword(password), 'Super administrateur');
-  console.log(`Super-administrateur cree : ${email} (pensez a changer le mot de passe).`);
+  if (generated) {
+    console.log('\n===============================================================');
+    console.log(`  Super-administrateur cree : ${email}`);
+    console.log(`  Mot de passe genere       : ${generated}`);
+    console.log('  NOTEZ-LE : il ne sera plus jamais affiche.');
+    console.log('  Definissez SUPERADMIN_PASSWORD pour choisir le votre.');
+    console.log('===============================================================\n');
+  } else {
+    console.log(`Super-administrateur cree : ${email} (pensez a changer le mot de passe).`);
+  }
+}
+
+// Cle de signature des cookies de session.
+//   - SESSION_SECRET defini  : on l'utilise (recommande en production) ;
+//   - sinon                  : une cle aleatoire est generee UNE FOIS et
+//     conservee en base. Sans cela, chaque redemarrage — et, en serverless,
+//     chaque instance — utilise une cle differente et deconnecte tout le monde.
+let sessionSecret = null;
+async function ensureSessionSecret() {
+  if (process.env.SESSION_SECRET) {
+    sessionSecret = process.env.SESSION_SECRET;
+    return sessionSecret;
+  }
+  const row = await db.prepare('SELECT session_secret FROM platform WHERE id = 1').get();
+  if (row && row.session_secret) {
+    sessionSecret = row.session_secret;
+    return sessionSecret;
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  await db.prepare('UPDATE platform SET session_secret = ? WHERE id = 1').run(generated);
+  sessionSecret = generated;
+  return sessionSecret;
+}
+
+function getSessionSecret() {
+  return sessionSecret || process.env.SESSION_SECRET || null;
 }
 
 // Rattache d'eventuelles donnees mono-entreprise existantes a une 1ere entreprise.
@@ -604,6 +649,7 @@ async function init() {
   // puissent porter sur des colonnes ajoutees par une migration.
   await client.executeMultiple(INDEXES_SQL);
   await seedPlatform();
+  await ensureSessionSecret();
   await seedSuperAdmin();
   await migrateLegacyData();
   await migrateInactiveSubscriptionDates();
@@ -628,6 +674,7 @@ module.exports = {
   hashPassword,
   verifyPassword,
   computeSubscription,
+  getSessionSecret,
   todayYMD,
   addDaysYMD,
   addYearsYMD,

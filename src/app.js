@@ -14,7 +14,7 @@ const crypto = require('crypto');
 const express = require('express');
 const cookieSession = require('cookie-session');
 
-const { ready, db } = require('./db');
+const { ready, db, getSessionSecret } = require('./db');
 const {
   router: authRouter, requireAuth, requireSuperadmin, requireCompany, requireActiveSubscription,
 } = require('./auth');
@@ -40,14 +40,29 @@ if (isProd) app.set('trust proxy', 1);
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-app.use(cookieSession({
+// Sessions : la cle de signature vient de SESSION_SECRET ou, a defaut, d'une
+// cle generee une fois et conservee en base (cf. db.ensureSessionSecret). Une
+// cle tiree au hasard a chaque demarrage deconnecterait tout le monde a chaque
+// redeploiement, et — en serverless — d'une instance a l'autre. Le middleware
+// est donc construit apres l'initialisation de la base, puis reutilise.
+let sessionMiddleware = null;
+const buildSessionMiddleware = () => cookieSession({
   name: 'naf.sid',
-  keys: [process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex')],
+  keys: [getSessionSecret() || crypto.randomBytes(32).toString('hex')],
   httpOnly: true,
   sameSite: 'lax',
   secure: isProd,
   maxAge: 1000 * 60 * 60 * 12, // 12 h
-}));
+});
+app.use((req, res, next) => {
+  if (sessionMiddleware) return sessionMiddleware(req, res, next);
+  ready
+    .then(() => {
+      if (!sessionMiddleware) sessionMiddleware = buildSessionMiddleware();
+      sessionMiddleware(req, res, next);
+    })
+    .catch(next);
+});
 
 // ----- Routes publiques --------------------------------------------------
 // Authentification (inscription, connexion, /me, déconnexion, mot de passe).

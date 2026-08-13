@@ -147,9 +147,13 @@ export async function render() {
   async function remove(row) {
     const ok = await confirmDialog({ title: 'Supprimer le locataire', danger: true, okLabel: 'Supprimer', message: `Supprimer « ${row.nom_prenoms} » ?` });
     if (!ok) return;
-    await api.del('/api/tenants/' + row.id);
-    toast('Locataire supprimé.');
-    load();
+    try {
+      await api.del('/api/tenants/' + row.id);
+      toast('Locataire supprimé.');
+      load();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
   }
 
   root.querySelector('#addBtn').onclick = () => openForm(null);

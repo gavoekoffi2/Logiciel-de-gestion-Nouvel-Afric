@@ -248,10 +248,32 @@ router.put('/owners/:id', wrap(async (req, res) => {
 }));
 
 router.delete('/owners/:id', wrap(async (req, res) => {
+  const cid = req.companyId;
   const id = toInt(req.params.id);
-  const row = await db.prepare('SELECT nom_prenoms FROM owners WHERE id = ? AND company_id = ?').get(id, req.companyId);
-  await db.prepare('DELETE FROM owners WHERE id = ? AND company_id = ?').run(id, req.companyId);
-  if (row) await logAction(req, 'Suppression', 'Propriétaire', row.nom_prenoms);
+  const row = await db.prepare('SELECT nom_prenoms FROM owners WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!row) return res.status(404).json({ error: 'Propriétaire introuvable.' });
+
+  // Supprimer un proprietaire qui possede encore des biens les laisserait
+  // « sans proprietaire » dans l'etat de recouvrement, et ses reversements
+  // perdraient le nom du beneficiaire : l'agence ne saurait plus a qui elle a
+  // verse l'argent. On protege donc l'historique comptable.
+  const [biens, reversements] = await Promise.all([
+    db.prepare('SELECT COUNT(*) AS n FROM properties WHERE owner_id = ? AND company_id = ?').get(id, cid),
+    db.prepare('SELECT COUNT(*) AS n FROM payouts WHERE owner_id = ? AND company_id = ?').get(id, cid),
+  ]);
+  if (biens.n > 0) {
+    return res.status(400).json({
+      error: `Ce propriétaire possède ${biens.n} bien(s). Réaffectez-les à un autre propriétaire avant de le supprimer.`,
+    });
+  }
+  if (reversements.n > 0) {
+    return res.status(400).json({
+      error: 'Ce propriétaire a reçu des reversements : sa fiche doit être conservée pour l’historique comptable.',
+    });
+  }
+
+  await db.prepare('DELETE FROM owners WHERE id = ? AND company_id = ?').run(id, cid);
+  await logAction(req, 'Suppression', 'Propriétaire', row.nom_prenoms);
   res.json({ ok: true });
 }));
 
@@ -1724,6 +1746,18 @@ router.get('/users', requireRole('admin'), wrap(async (req, res) => {
   ).all(req.companyId));
 }));
 
+// Une entreprise doit toujours conserver AU MOINS un administrateur actif :
+// sans lui, plus personne ne peut gerer les utilisateurs, les parametres ni les
+// sauvegardes, et l'entreprise se retrouve enfermee dehors.
+async function isLastActiveAdmin(companyId, userId) {
+  const user = await db.prepare('SELECT role, actif FROM users WHERE id = ? AND company_id = ?').get(userId, companyId);
+  if (!user || user.role !== 'admin' || !user.actif) return false;
+  const other = await db.prepare(
+    "SELECT 1 FROM users WHERE company_id = ? AND role = 'admin' AND actif = 1 AND id <> ?"
+  ).get(companyId, userId);
+  return !other;
+}
+
 router.post('/users', requireRole('admin'), wrap(async (req, res) => {
   const cid = req.companyId;
   const email = clean(req.body.email).toLowerCase();
@@ -1731,7 +1765,7 @@ router.post('/users', requireRole('admin'), wrap(async (req, res) => {
   const nom = clean(req.body.nom);
   const role = normRole(req.body.role);
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'E-mail invalide.' });
-  if (!password) return res.status(400).json({ error: 'Mot de passe requis.' });
+  if (password.length < 6) return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères.' });
   if (await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) {
     return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée.' });
   }
@@ -1751,6 +1785,15 @@ router.put('/users/:id', requireRole('admin'), wrap(async (req, res) => {
   const role = normRole(req.body.role);
   const actif = req.body.actif === undefined ? user.actif : (req.body.actif ? 1 : 0);
   const password = clean(req.body.password);
+  if ((role !== 'admin' || !actif) && await isLastActiveAdmin(cid, id)) {
+    return res.status(400).json({
+      error: 'Ce compte est le dernier administrateur actif de l’entreprise. '
+        + 'Nommez d’abord un autre administrateur avant de modifier son rôle ou de le désactiver.',
+    });
+  }
+  if (password && password.length < 6) {
+    return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 6 caractères.' });
+  }
   if (password) {
     await db.prepare('UPDATE users SET nom=?, role=?, actif=?, password=? WHERE id=? AND company_id=?')
       .run(nom, role, actif, hashPassword(password), id, cid);
@@ -1766,8 +1809,15 @@ router.delete('/users/:id', requireRole('admin'), wrap(async (req, res) => {
   const id = toInt(req.params.id);
   if (id === req.userId) return res.status(400).json({ error: 'Vous ne pouvez pas supprimer votre propre compte.' });
   const row = await db.prepare('SELECT nom, email FROM users WHERE id = ? AND company_id = ?').get(id, cid);
+  if (!row) return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  if (await isLastActiveAdmin(cid, id)) {
+    return res.status(400).json({
+      error: 'Ce compte est le dernier administrateur actif de l’entreprise et ne peut pas être supprimé. '
+        + 'Nommez d’abord un autre administrateur.',
+    });
+  }
   await db.prepare('DELETE FROM users WHERE id = ? AND company_id = ?').run(id, cid);
-  if (row) await logAction(req, 'Suppression', 'Utilisateur', row.nom || row.email);
+  await logAction(req, 'Suppression', 'Utilisateur', row.nom || row.email);
   res.json({ ok: true });
 }));
 
@@ -1948,6 +1998,22 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   // 'remplacer' : efface d'abord les donnees actuelles de CETTE entreprise.
   // 'fusionner' (defaut) : ajoute aux donnees existantes.
   const mode = clean(body.mode) === 'remplacer' ? 'remplacer' : 'fusionner';
+  if (mode === 'remplacer') {
+    // Le remplacement efface TOUT le metier de l'entreprise. Un fichier partiel
+    // (par exemple un export ne contenant que le journal) detruirait biens,
+    // baux et loyers sans rien restaurer : on exige une sauvegarde complete.
+    for (const key of DATA_TABLES) {
+      if (d[key] !== undefined && !Array.isArray(d[key])) {
+        return res.status(400).json({ error: `Fichier de sauvegarde corrompu : la rubrique « ${key} » est illisible.` });
+      }
+    }
+    if (!owners.length && !tenants.length && !properties.length) {
+      return res.status(400).json({
+        error: 'Ce fichier ne contient ni propriétaire, ni locataire, ni bien : le remplacement effacerait vos données '
+          + 'sans rien restaurer. Vérifiez le fichier, ou choisissez « Ajouter aux données ».',
+      });
+    }
+  }
   if (mode === 'remplacer') {
     for (const t of [...DATA_TABLES].reverse()) {
       await db.prepare(`DELETE FROM ${t} WHERE company_id = ?`).run(cid);

@@ -23,7 +23,7 @@ const platformRouter = require('./platform');
 
 const isProd = process.env.NODE_ENV === 'production';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
-// gestiOne est le lien public d'acquisition des entreprises. Les autres
+// MaGérance est le lien public d'acquisition des entreprises. Les autres
 // domaines de cette application restent des accès de plateforme / agences.
 const MAGERANCE_HOSTS = new Set([
   'magerance.76.13.129.252.sslip.io',
@@ -77,9 +77,9 @@ app.get('/api/branding', async (req, res) => {
       }
     }
     const p = await db.prepare('SELECT nom FROM platform WHERE id = 1').get();
-    res.json({ entreprise: (p && p.nom) || 'gestiOne', logo: null });
+    res.json({ entreprise: (p && p.nom) || 'MaGérance', logo: null });
   } catch (_) {
-    res.json({ entreprise: 'gestiOne', logo: null });
+    res.json({ entreprise: 'MaGérance', logo: null });
   }
 });
 
@@ -111,7 +111,7 @@ app.get('/login', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')
 app.get('/e/:slug', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
 app.get('/register', (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'register.html')));
 
-// L'accueil marketing est exclusivement sur le domaine gestiOne Entreprises.
+// L'accueil marketing est exclusivement sur le domaine MaGérance Entreprises.
 // Les autres domaines continuent directement vers leur accès applicatif.
 app.get('/', (req, res, next) => {
   if (!req.session || !req.session.userId) {

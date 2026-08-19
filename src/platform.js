@@ -246,7 +246,7 @@ router.put('/settings', wrap(async (req, res) => {
     `UPDATE platform SET nom=?, contact_telephone=?, contact_whatsapp=?, contact_email=?,
        prix_annuel=?, devise=?, message=? WHERE id=1`
   ).run(
-    clean(b.nom) || 'gestiOne',
+    clean(b.nom) || 'MaGérance',
     clean(b.contact_telephone),
     clean(b.contact_whatsapp),
     clean(b.contact_email),
@@ -356,7 +356,7 @@ router.post('/backup/import', wrap(async (req, res) => {
   if (!hasPlatform) {
     await db.prepare(
       `INSERT INTO platform (id, nom, contact_telephone, contact_whatsapp, contact_email, prix_annuel, devise, message)
-       VALUES (1, 'gestiOne', '', '', '', 50000, 'FCFA', '')`
+       VALUES (1, 'MaGérance', '', '', '', 50000, 'FCFA', '')`
     ).run();
     imported.platform += 1;
   }

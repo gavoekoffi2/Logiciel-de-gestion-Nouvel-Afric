@@ -1,7 +1,7 @@
 {
-  "name": "gestione-gestion-locative",
+  "name": "nouvel-afric-gestion-locative",
   "version": "1.0.0",
-  "description": "Logiciel de gestion locative immobiliere - gestiOne (application web multi-utilisateurs)",
+  "description": "Logiciel de gestion locative immobiliere - Nouvel Afric (application web multi-utilisateurs)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -15,7 +15,7 @@
     "location",
     "nouvel-afric"
   ],
-  "author": "gestiOne",
+  "author": "Nouvel Afric",
   "license": "UNLICENSED",
   "private": true,
   "engines": {

@@ -4,7 +4,7 @@
 # renseigner TURSO_DATABASE_URL et TURSO_AUTH_TOKEN (voir docs/DEPLOIEMENT.md).
 services:
   - type: web
-    name: gestiOne
+    name: nouvel-afric
     runtime: node
     region: frankfurt
     plan: free                 # gratuit (le service s'endort après ~15 min d'inactivité)

@@ -1,4 +1,4 @@
-name: Validation Nouvel Afrik
+name: Validation gestiOne
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: nouvel-afrik-${{ github.ref }}
+  group: gestione-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

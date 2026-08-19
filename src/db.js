@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS companies (
 -- aux entreprises pour s'abonner (contact + tarif annuel).
 CREATE TABLE IF NOT EXISTS platform (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
-  nom               TEXT NOT NULL DEFAULT 'MaGérance',
+  nom               TEXT NOT NULL DEFAULT 'gestiOne',
   contact_telephone TEXT,
   contact_whatsapp  TEXT,
   contact_email     TEXT,
@@ -438,12 +438,16 @@ const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
 
 async function seedPlatform() {
   const has = (await db.prepare('SELECT COUNT(*) AS n FROM platform').get()).n;
-  if (has) return;
+  if (has) {
+    // Migrate the former product label once, without overwriting a custom platform name.
+    await db.prepare("UPDATE platform SET nom = 'gestiOne' WHERE id = 1 AND nom = 'MaGérance'").run();
+    return;
+  }
   await db.prepare(
     `INSERT INTO platform (id, nom, contact_telephone, contact_whatsapp, contact_email, prix_annuel, devise, message)
      VALUES (1, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
-    'MaGérance',
+    'gestiOne',
     '+228 90 00 00 00',
     '+228 90 00 00 00',
     'contact@nouvelafric.tg',

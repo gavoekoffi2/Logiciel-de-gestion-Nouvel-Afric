@@ -94,7 +94,10 @@ test('current (in-progress) month is « À échoir » and never counts as unpaid
     const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const prevMonth = MOIS[prev.getMonth()];
 
-    const details = await request(baseUrl, 'GET', `/api/properties/${property.id}/details`, null, cookie);
+    // Vue « toutes les périodes » : la fiche s'ouvre par défaut sur le seul mois
+    // à recouvrer (compteur mensuel), on demande donc l'échéancier complet pour
+    // vérifier la règle du terme échu sur l'ensemble du bail.
+    const details = await request(baseUrl, 'GET', `/api/properties/${property.id}/details?mode=all`, null, cookie);
     assert.equal(details.res.status, 200);
     const sub = details.data.subscriptions[0];
 
@@ -183,10 +186,14 @@ test('the recovery report never claims the rent of the running month', async () 
     assert.equal(asked.data.annee, due.annee);
     assert.equal(asked.data.mois_demande, MOIS[now.getMonth()]);
 
-    // Bail démarré 2 mois avant : 2 mois échus dus, jamais 3.
+    // Compteur mensuel : l'état ne porte QUE sur le mois échu affiché — un seul
+    // mois dû, un seul loyer. Le mois encore antérieur est un arriéré, compté à
+    // part, jamais ajouté au dû du mois.
     const ligne = asked.data.zones[0].maisons[0].locataires[0];
-    assert.equal(ligne.mois_dus, 2);
-    assert.equal(ligne.montant_du, 100000);
+    assert.equal(ligne.mois_dus, 1);
+    assert.equal(ligne.montant_du, 50000);
+    assert.equal(ligne.arrieres, 50000);
+    assert.equal(ligne.arrieres_mois, 1);
     assert.equal(ligne.mois_dus_liste.includes(`${MOIS[now.getMonth()]} ${now.getFullYear()}`), false,
       'le mois en cours ne doit jamais figurer parmi les mois dûs');
 

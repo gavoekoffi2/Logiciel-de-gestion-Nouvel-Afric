@@ -18,7 +18,7 @@ const { db, hashPassword, computeSubscription, migrateInactiveSubscriptionDates 
 const { requireRole, publicUser, companyState } = require('./auth');
 const { isNoSubscriptionCompanyName } = require('./companyPolicy');
 const { normalizePaidMonths, parsePeriods, buildPaidMonthMap, summarizeRecoveryMonths } = require('./paymentPeriods');
-const { normalizeRange, periodInRange, paymentAmountsInRange, rangeLabel } = require('./periodRange');
+const { normalizeRange, periodInRange, periodIndex, paymentAmountsInRange, rangeLabel } = require('./periodRange');
 const {
   previousRentPeriod, lastDuePeriod, clampToDuePeriod, isPeriodDue, isPeriodTooFarAhead,
   periodIndexOf, MAX_ADVANCE_MONTHS,
@@ -884,7 +884,11 @@ router.post('/properties/:id/tenants', wrap(async (req, res) => {
 router.get('/properties/:id/details', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
-  const range = normalizeRange(req.query, { mode: 'all' });
+  // Compteur mensuel : par defaut la fiche presente le mois en cours de
+  // recouvrement, pas tout l'historique du bail. Les mois precedents ne sont
+  // pas perdus — ils sont chiffres a part dans « arrieres » — et le filtre de
+  // periode permet toujours de revenir sur un mois passe ou sur le cumul.
+  const range = normalizeRange(req.query, { mode: 'current' });
   const property = await db.prepare(`${PROPERTY_SELECT} WHERE p.id = ? AND p.company_id = ?`).get(id, cid);
   if (!property) return res.status(404).json({ error: 'Bien introuvable.' });
 
@@ -930,16 +934,11 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
        FROM payments WHERE subscription_id = ? AND company_id = ? ORDER BY annee_concernee, id`
     ).all(s.id, cid);
 
-    const paidBy = {};
     let total_paye = 0;
     const filteredPays = [];
     for (const p of pays) {
       const selected = paymentAmountsInRange(p, range);
       if (!selected.matches) continue;
-      for (const period of selected.periodAmounts) {
-        const k = `${period.annee}-${period.mois}`;
-        paidBy[k] = (paidBy[k] || 0) + period.montant_paye;
-      }
       total_paye += selected.montant_paye;
       filteredPays.push({
         ...p,
@@ -952,28 +951,49 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     }
 
     const loyer = s.montant_loyer || 0;
+    // Montant encaisse POUR chaque mois de loyer, toutes periodes confondues.
+    // Independant du filtre : c'est ce qui permet de chiffrer les arrieres des
+    // mois anterieurs sans les faire entrer dans les totaux du mois affiche.
+    const paidByAll = {};
+    for (const p of pays) {
+      for (const period of paymentAmountsInRange(p, { mode: 'all' }).periodAmounts) {
+        const k = `${period.annee}-${period.mois}`;
+        paidByAll[k] = (paidByAll[k] || 0) + period.montant_paye;
+      }
+    }
+
     // Les baux actifs affichent aussi le mois courant (« À échoir ») : le
     // locataire le consomme encore, son loyer ne sera exigible que le mois
     // suivant. Les baux clôturés conservent leur échéancier historique jusqu'au
     // dernier mois dû.
     let echeancier = [];
+    let arrieres = 0;
+    let arrieres_mois = 0;
     if (s.date_debut_paiement) {
       const now = new Date();
       const end = subscriptionEndPeriod(s, pays, { includeCurrent: true, ref: now });
-      if (end) echeancier = monthsUntil(s.date_debut_paiement, end.annee, end.mois)
-        .filter((mm) => periodInRange(mm, range))
-        .map((mm) => {
-          const echu = isPeriodDue(mm, now);
-          const paye = paidBy[`${mm.annee}-${mm.mois}`] || 0;
-          const diff = loyer - paye;
-          const resteReel = diff > PAYMENT_TOLERANCE ? diff : 0;
-          const reste = echu ? resteReel : 0;
-          let statut;
-          if (loyer > 0 && resteReel === 0) statut = 'Payé';
-          else if (!echu) statut = paye > 0 ? 'Partiel' : 'À échoir';
-          else statut = paye > 0 ? 'Partiel' : 'Impayé';
-          return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, echu, statut };
-        });
+      const calendrier = end ? monthsUntil(s.date_debut_paiement, end.annee, end.mois) : [];
+      const ligne = (mm) => {
+        const echu = isPeriodDue(mm, now);
+        const paye = paidByAll[`${mm.annee}-${mm.mois}`] || 0;
+        const diff = loyer - paye;
+        const resteReel = diff > PAYMENT_TOLERANCE ? diff : 0;
+        const reste = echu ? resteReel : 0;
+        let statut;
+        if (loyer > 0 && resteReel === 0) statut = 'Payé';
+        else if (!echu) statut = paye > 0 ? 'Partiel' : 'À échoir';
+        else statut = paye > 0 ? 'Partiel' : 'Impayé';
+        return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, echu, statut };
+      };
+      echeancier = calendrier.filter((mm) => periodInRange(mm, range)).map(ligne);
+      // Retards des mois situes AVANT la periode affichee : comptes a part pour
+      // qu'un impaye ancien reste visible sans gonfler le compteur du mois.
+      for (const mm of calendrier) {
+        if (periodInRange(mm, range)) continue;
+        if (range.from && periodIndex(mm) >= range.from.index) continue;
+        const l = ligne(mm);
+        if (l.echu && l.reste > 0) { arrieres += l.reste; arrieres_mois += 1; }
+      }
     }
     const total_attendu = echeancier.reduce((a, m) => a + (m.echu ? m.attendu : 0), 0);
     const reste = echeancier.reduce((a, m) => a + m.reste, 0);
@@ -981,7 +1001,7 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
 
     s.paiements = filteredPays;
     s.echeancier = echeancier;
-    s.resume = { nb_paiements: filteredPays.length, total_attendu, total_paye, reste, mois_retard };
+    s.resume = { nb_paiements: filteredPays.length, total_attendu, total_paye, reste, mois_retard, arrieres, arrieres_mois };
   }
 
   const payoutLineRows = await db.prepare(
@@ -1011,6 +1031,7 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     total_reste: allPayments.reduce((a, p) => a + (p.reste_a_payer || 0), 0),
     total_reparations: repairs.reduce((a, r) => a + (r.montant || 0), 0),
     total_reversements_net: payouts.reduce((a, v) => a + (v.lignes_bien || []).reduce((b, l) => b + (l.net || 0), 0), 0),
+    total_arrieres: subs.reduce((a, s) => a + ((s.resume && s.resume.arrieres) || 0), 0),
     nombre_locataires: subs.length,
     nombre_locataires_actifs: subs.filter((s) => s.statut === 'Active').length,
   };
@@ -1056,14 +1077,27 @@ router.delete('/repairs/:id', wrap(async (req, res) => {
 }));
 
 // ===========================================================================
-// RECOUVREMENT : rapport mensuel par ZONE (quartier) -> MAISON -> LOCATAIRE.
-// Tout est calcule automatiquement a partir des paiements enregistres.
-//   - montant du   = mois attendus (depuis le debut du bail jusqu'au mois choisi) x loyer
-//   - montant paye = somme encaissee pour ces periodes
-//   - ecart        = du - paye (impayes)
-//   - commission partielle = taux du bien x paye   (commission reellement gagnee)
-//   - commission generale  = taux du bien x du     (commission sur le total du)
-//   - solde (a reverser)   = paye - reparations - commission generale  (peut etre negatif)
+// RECOUVREMENT : rapport MENSUEL par ZONE (quartier) -> MAISON -> LOCATAIRE.
+//
+// COMPTEUR REMIS A ZERO CHAQUE MOIS. C'est la regle fondamentale de cet etat :
+// le rapport de septembre ne doit contenir QUE ce qui concerne le mois de
+// septembre. Les loyers encaisses les mois precedents ne doivent jamais
+// s'ajouter au total du mois affiche, sinon l'agence est incapable de savoir
+// combien elle a reellement recolte dans le mois.
+//
+// Pour le mois affiche uniquement :
+//   - montant du   = loyer du mois (0 si le bail ne couvre pas ce mois)
+//   - montant paye = somme encaissee POUR ce mois (quelle que soit la date
+//                    d'encaissement : un loyer d'aout paye en octobre reste un
+//                    loyer d'aout)
+//   - ecart        = du - paye du mois (impaye du mois)
+//   - commission partielle = taux du bien x paye du mois
+//   - commission generale  = taux du bien x du du mois
+//   - solde (a reverser)   = paye du mois - reparations du mois - commission generale
+//
+// Les retards des mois anterieurs ne sont pas perdus pour autant : ils sont
+// calcules a part, dans la colonne « arrieres », et ne polluent aucun total du
+// mois.
 // ===========================================================================
 router.get('/recouvrement', wrap(async (req, res) => {
   const cid = req.companyId;
@@ -1101,20 +1135,15 @@ router.get('/recouvrement', wrap(async (req, res) => {
   ]);
 
   const reportIndex = anneeSel * 12 + emIndex;
-  const cumulativeRange = { fromIndex: Number.MIN_SAFE_INTEGER, toIndex: reportIndex };
-  const cumulativePayments = pays.map((payment) => {
-    const selected = paymentAmountsInRange(payment, cumulativeRange);
-    return selected.matches ? {
-      ...payment,
-      montant_paye: selected.montant_paye,
-      mois_payes: JSON.stringify(selected.selectedPeriods),
-      mois_concerne: selected.selectedPeriods[0].mois,
-      annee_concernee: selected.selectedPeriods[0].annee,
-    } : null;
-  }).filter(Boolean);
-  const payBySub = buildPaidMonthMap(cumulativePayments);
+  // La carte des encaissements couvre TOUT le bail (aucun filtrage de periode) :
+  // chaque paiement reste impute au mois de loyer qu'il regle. C'est ce qui
+  // permet ensuite d'extraire le mois affiche seul, les arrieres anterieurs, et
+  // les avances, sans jamais melanger les trois.
+  const payBySub = buildPaidMonthMap(pays);
   const repByProp = new Map();
   for (const r of reps) repByProp.set(r.property_id, (repByProp.get(r.property_id) || 0) + (r.montant || 0));
+
+  const monthIndexOf = (period) => period.annee * 12 + MOIS.indexOf(period.mois) + 1;
 
   const maisons = new Map();
   for (const s of subs) {
@@ -1126,14 +1155,32 @@ router.get('/recouvrement', wrap(async (req, res) => {
       if (!historicalEnd) continue;
       if (historicalEnd.annee * 12 + historicalEnd.mois < reportIndex) end = historicalEnd;
     }
-    // Un bail dont aucun mois n'est encore echu (entree ce mois-ci) reste
-    // affiche avec 0 mois du : le faire disparaitre de l'etat laisse croire
-    // a un oubli de saisie.
-    const months = monthsUntil(s.date_debut_paiement, end.annee, end.mois);
     const pe = payBySub.get(s.id) || { paid: new Map(), total: 0, lastRecu: null };
-    const summary = summarizeRecoveryMonths(months, pe, loyer);
+
+    // Echeancier complet du bail jusqu'au mois affiche : sert de reference pour
+    // distinguer un mois du d'une avance, et pour chiffrer les arrieres.
+    const scheduleMonths = monthsUntil(s.date_debut_paiement, end.annee, end.mois);
+    // LE MOIS AFFICHE, ET LUI SEUL.
+    const moisDuRapport = scheduleMonths.filter((m) => monthIndexOf(m) === reportIndex);
+    // Les mois anterieurs, chiffres a part (colonne « arrieres »).
+    const moisAnterieurs = scheduleMonths.filter((m) => monthIndexOf(m) < reportIndex);
+
+    const summary = summarizeRecoveryMonths(moisDuRapport, pe, loyer, { scheduleMonths });
+    const arrieres = summarizeRecoveryMonths(moisAnterieurs, pe, loyer, { scheduleMonths });
     const montantDu = summary.montant_du;
     const montantPaye = summary.montant_paye;
+
+    // Un bail actif reste toujours affiche, meme sans rien a encaisser ce
+    // mois-ci : le faire disparaitre laisserait croire a un oubli de saisie.
+    // Un bail clos, lui, ne figure au rapport que s'il a encore quelque chose a
+    // y dire (mois du, encaissement du mois, ou arriere).
+    const concerneLeRapport = moisDuRapport.length > 0 || montantPaye > 0 || arrieres.ecart > 0;
+    if (s.statut !== 'Active' && !concerneLeRapport) continue;
+
+    const recuDuMois = moisDuRapport.reduce((found, m) => {
+      const entry = pe.paid.get(`${m.annee}-${m.mois}`);
+      return (entry && entry.numero_recu) || found;
+    }, null);
 
     let M = maisons.get(s.property_id);
     if (!M) {
@@ -1141,30 +1188,43 @@ router.get('/recouvrement', wrap(async (req, res) => {
         property_id: s.property_id, code: s.property_code, designation: s.designation, type: s.type_construction,
         zone: s.quartier || s.commune || s.ville || 'Sans zone',
         owner_id: s.owner_id, owner_nom: s.owner_nom, owner_contact: s.owner_contact,
-        part_commission: s.part_commission || 0, locataires: [], total_du: 0, total_paye: 0,
+        part_commission: s.part_commission || 0, locataires: [], total_du: 0, total_paye: 0, total_arrieres: 0,
       };
       maisons.set(s.property_id, M);
     }
+    let statutMois;
+    if (!moisDuRapport.length) statutMois = 'Hors bail';
+    else if (summary.ecart <= 0) statutMois = 'Payé';
+    else if (montantPaye > 0) statutMois = 'Partiel';
+    else statutMois = 'Impayé';
+
     M.locataires.push({
       tenant_nom: s.tenant_nom, designation: s.designation, loyer,
+      statut_mois: statutMois,
       mois_payes: summary.mois_payes, mois_payes_liste: summary.mois_payes_liste,
       mois_dus: summary.mois_dus, mois_dus_liste: summary.mois_dus_liste,
       mois_credit: summary.mois_credit, mois_credit_liste: summary.mois_credit_liste,
       montant_du: montantDu, montant_paye: montantPaye, ecart: summary.ecart,
-      avance: s.montant_avance || 0, numero_recu: pe.lastRecu,
+      // Retards des mois PRECEDENTS : montre a part, jamais additionne au mois.
+      arrieres: arrieres.ecart,
+      arrieres_mois: arrieres.mois_dus,
+      arrieres_liste: arrieres.mois_dus_liste,
+      avance: s.montant_avance || 0, numero_recu: recuDuMois,
     });
     M.total_du += montantDu;
     M.total_paye += montantPaye;
+    M.total_arrieres += arrieres.ecart;
   }
 
-  const FIELDS = ['total_du', 'total_paye', 'ecart', 'reparations', 'commission_partielle', 'commission_generale', 'solde'];
+  const FIELDS = ['total_du', 'total_paye', 'ecart', 'total_arrieres', 'reparations', 'commission_partielle', 'commission_generale', 'solde'];
   const zones = new Map();
   const recap = Object.fromEntries(FIELDS.map((k) => [k, 0]));
   for (const M of maisons.values()) {
     const taux = M.part_commission || 0;
     M.reparations = repByProp.get(M.property_id) || 0;
-    const ecartBrut = M.total_du - M.total_paye;
-    M.ecart = ecartBrut > 1 ? ecartBrut : 0;
+    // Ecart du MOIS : somme des manques locataire par locataire, pour qu'un
+    // trop-percu chez l'un ne vienne pas effacer l'impaye d'un autre.
+    M.ecart = M.locataires.reduce((total, l) => total + l.ecart, 0);
     M.commission_partielle = Math.round(M.total_paye * taux / 100);
     M.commission_generale = Math.round(M.total_du * taux / 100);
     M.solde = M.total_paye - M.reparations - M.commission_generale;
@@ -1184,6 +1244,10 @@ router.get('/recouvrement', wrap(async (req, res) => {
     periode_ajustee: periodeAjustee,
     mois_exigible: due.mois,
     annee_exigible: due.annee,
+    // Rappel explicite au client : les totaux ci-dessous portent sur CE MOIS
+    // uniquement. Un ancien front (page gardee ouverte, cache navigateur) ne
+    // peut donc pas presenter ces chiffres comme un cumul.
+    portee: 'mois',
     zones: zonesArr,
     recap,
   });
@@ -1616,7 +1680,10 @@ router.get('/dashboard', wrap(async (req, res) => {
   const now = new Date();
   const moisCourant = MOIS[now.getMonth()];
   const anneeCourante = now.getFullYear();
-  const range = normalizeRange(req.query, { mode: 'ytd', ref: now });
+  // Compteur mensuel : le tableau de bord s'ouvre sur le mois en cours de
+  // recouvrement, pas sur le cumul depuis janvier. Le filtre de periode reste
+  // disponible pour « Depuis janvier » ou « Toutes les periodes ».
+  const range = normalizeRange(req.query, { mode: 'current', ref: now });
   const one = (sql, ...p) => db.prepare(sql).get(...p);
 
   const [proprietaires, locataires, maisons, occupees, subscriptions, paymentRows, allProps] = await Promise.all([
@@ -1681,7 +1748,11 @@ router.get('/dashboard', wrap(async (req, res) => {
   }
 
   const totalPaid = selectedPayments.reduce((sum, p) => sum + (p.montant_paye || 0), 0);
-  const aReverser = selectedPayments.filter((p) => !p.payout_id && p.montant_paye > 0)
+  // Le « reste a reverser » est une DETTE qui s'accumule jusqu'au reversement,
+  // pas un flux du mois : on la calcule sur tous les loyers encaisses non encore
+  // reverses, quelle que soit leur periode. Sinon le tableau de bord annoncerait
+  // un montant plus faible que l'ecran Reversements, qui lui fait foi.
+  const aReverser = paymentRows.filter((p) => !p.payout_id && p.montant_paye > 0)
     .reduce((sum, p) => sum + p.montant_paye - Math.round(p.montant_paye * (p.part_commission || 0) / 100), 0);
   const scopedSubscriptions = subscriptions.filter(subscriptionInRange);
   const nb_maisons = maisons.n;

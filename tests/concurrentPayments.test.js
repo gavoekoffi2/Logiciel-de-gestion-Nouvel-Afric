@@ -188,7 +188,8 @@ test('API and property detail accept a one-franc short payment as sold without a
     assert.equal(payment.data.reste_a_payer, 0);
     assert.equal(payment.data.statut, 'Soldé');
 
-    const detail = await request(baseUrl, 'GET', `/api/properties/${property.id}/details`, null, secretaryCookie);
+    // La fiche s'ouvre sur le mois à recouvrer ; on cible explicitement mars 2026.
+    const detail = await request(baseUrl, 'GET', `/api/properties/${property.id}/details?mode=month&from=2026-03`, null, secretaryCookie);
     assert.equal(detail.res.status, 200, JSON.stringify(detail.data));
     const updated = detail.data.subscriptions.find((s) => s.id === sub.id);
     const march = updated.echeancier.find((m) => m.mois === 'Mars' && m.annee === 2026);

@@ -175,12 +175,13 @@ export async function renderDetail() {
       <button class="btn btn-ghost btn-sm" id="back" style="margin-bottom:12px">${icon('back', 16)} Retour aux locataires</button>
       <div class="card card-pad" style="margin-bottom:16px;background:linear-gradient(135deg,#f8fafc,#ffffff);border:1px solid #e2e8f0">
         <div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:800">Fiche complète du locataire</div>
+        <div class="muted" style="font-size:12.5px;margin-top:4px">Dossier historique du locataire depuis son entrée. Pour le suivi mois par mois, voir le recouvrement ou la fiche du bien.</div>
         <h2 style="font-size:21px;margin:5px 0 4px;color:#0f172a">${icon('tenants', 22)} ${escapeHtml(t.nom_prenoms)}</h2>
         <div class="muted">${escapeHtml(t.contact || '—')} ${t.email ? ' · ' + escapeHtml(t.email) : ''}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-top:16px">
           ${miniStat('Baux / biens liés', fmt.int(subs.length))}
-          ${miniStat('Loyers payés', fmt.money(totals.loyers_payes))}
-          ${miniStat('Reste à payer', fmt.money(totals.reste_a_payer), totals.reste_a_payer > 0)}
+          ${miniStat('Loyers payés (tout l’historique)', fmt.money(totals.loyers_payes))}
+          ${miniStat('Reste à payer (tout l’historique)', fmt.money(totals.reste_a_payer), totals.reste_a_payer > 0)}
           ${miniStat('Cautions', fmt.money(totals.cautions))}
           ${miniStat('Avances', fmt.money(totals.avances))}
           ${miniStat('Autres frais', fmt.money(totals.autres_frais))}

@@ -69,8 +69,11 @@ function buildPaidMonthMap(payments) {
     const share = periods.length ? (toInt(p.montant_paye) / periods.length) : toInt(p.montant_paye);
     for (const per of periods) {
       const k = periodKey(per);
-      const existing = entry.paid.get(k) || { ...per, amount: 0 };
+      const existing = entry.paid.get(k) || { ...per, amount: 0, numero_recu: null };
       existing.amount += share;
+      // Numero de recu rattache a CE mois : un etat mensuel doit pouvoir citer
+      // la piece justificative du mois affiche, pas le dernier recu du bail.
+      if (p.numero_recu) existing.numero_recu = p.numero_recu;
       entry.paid.set(k, existing);
     }
     entry.total += toInt(p.montant_paye);
@@ -79,26 +82,46 @@ function buildPaidMonthMap(payments) {
   return map;
 }
 
-function summarizeRecoveryMonths(expectedMonths, paidEntry, loyer) {
+// Bilan d'un echeancier : combien de mois sont soldes, combien restent dus, et
+// quel montant a ete effectivement encaisse POUR ces mois-la.
+//
+// `expectedMonths` delimite strictement le perimetre du calcul : si l'appelant
+// ne passe qu'un seul mois, les montants renvoyes ne concernent QUE ce mois. Un
+// encaissement impute a un autre mois n'est jamais reverse dans le total — c'est
+// ce qui permet au compteur de recouvrement de repartir de zero a chaque mois.
+//
+// `options.scheduleMonths` (facultatif) donne l'echeancier COMPLET du bail. Il
+// sert uniquement a reconnaitre les avances : un mois paye hors echeancier est
+// un credit, alors qu'un mois paye simplement en dehors de la fenetre analysee
+// (un mois anterieur, par exemple) n'en est pas un.
+function summarizeRecoveryMonths(expectedMonths, paidEntry, loyer, options = {}) {
   const paid = paidEntry && paidEntry.paid ? paidEntry.paid : new Map();
-  const expectedKeys = new Set((expectedMonths || []).map(periodKey));
+  const months = expectedMonths || [];
+  const expectedKeys = new Set(months.map(periodKey));
+  const scheduleKeys = options.scheduleMonths
+    ? new Set(options.scheduleMonths.map(periodKey))
+    : expectedKeys;
   const paidExpected = [];
   const due = [];
-  for (const m of expectedMonths || []) {
-    const e = paid.get(periodKey(m));
-    if (e && e.amount + PAYMENT_TOLERANCE >= loyer) paidExpected.push(m);
-    else due.push(m);
+  let montantPaye = 0;
+  let resteDu = 0;
+  for (const m of months) {
+    const entry = paid.get(periodKey(m));
+    const amount = entry ? entry.amount : 0;
+    montantPaye += amount;
+    const manque = loyer - amount;
+    if (manque > PAYMENT_TOLERANCE) {
+      due.push(m);
+      resteDu += manque;
+    } else {
+      paidExpected.push(m);
+    }
   }
   const credit = [];
   for (const e of paid.values()) {
-    if (!expectedKeys.has(periodKey(e))) credit.push(e);
+    if (!scheduleKeys.has(periodKey(e))) credit.push(e);
   }
-  const montantDu = (expectedMonths || []).length * loyer;
-  const montantPayeApplicable = Math.min(montantDu, paidExpected.length * loyer + (expectedMonths || []).reduce((a, m) => {
-    const e = paid.get(periodKey(m));
-    return a + (e && e.amount < loyer ? e.amount : 0);
-  }, 0));
-  const totalPaid = paidEntry ? paidEntry.total : 0;
+  const montantDu = months.length * loyer;
   return {
     mois_payes: paidExpected.length,
     mois_payes_liste: paidExpected.map(periodLabel),
@@ -107,9 +130,12 @@ function summarizeRecoveryMonths(expectedMonths, paidEntry, loyer) {
     mois_credit: credit.length,
     mois_credit_liste: credit.map(periodLabel),
     montant_du: montantDu,
-    montant_paye: Math.min(totalPaid, montantDu),
-    montant_paye_total: totalPaid,
-    ecart: Math.max(0, montantDu - totalPaid) <= PAYMENT_TOLERANCE ? 0 : Math.max(0, montantDu - totalPaid),
+    // Encaisse pour les mois analyses uniquement (jamais le cumul du bail).
+    montant_paye: Math.round(montantPaye),
+    montant_paye_total: paidEntry ? paidEntry.total : 0,
+    // Somme des manques mois par mois : un trop-percu sur un mois ne vient pas
+    // masquer l'impaye d'un autre mois.
+    ecart: Math.round(resteDu),
   };
 }
 

@@ -76,10 +76,13 @@ function feeValues(raw) {
 export async function render() {
   const hashParams = new URLSearchParams(location.hash.split('?')[1] || '');
   const id = hashParams.get('id');
-  // La fiche du bien est un dossier : par defaut elle presente TOUT l'historique
-  // du bail. Restreindre au seul mois en cours de recouvrement masquerait les
-  // mois de retard anterieurs et le total reellement du par le locataire.
-  const selectedPeriod = periodState(hashParams, 'all');
+  // Compteur mensuel : la fiche s'ouvre sur le mois en cours de recouvrement,
+  // pour que « Loyers encaissés » indique bien ce qui a été récolté CE mois-ci
+  // et non le cumul depuis l'entrée du locataire. Les retards des mois
+  // précédents ne sont pas perdus : ils sont affichés à part (« Arriérés
+  // antérieurs »), et le sélecteur de période permet de revoir tout
+  // l'historique.
+  const selectedPeriod = periodState(hashParams, 'current');
   if (!id) { location.hash = '#/maisons'; return; }
 
   const content = document.getElementById('content');
@@ -98,6 +101,9 @@ export async function render() {
   const enRetard = actifs.filter((s) => s.resume && s.resume.mois_retard > 0).length;
   const totalAttendu = subs.reduce((a, s) => a + ((s.resume && s.resume.total_attendu) || 0), 0);
   const totalImpaye = actifs.reduce((a, s) => a + ((s.resume && s.resume.reste) || 0), 0);
+  // Retards des mois situés AVANT la période affichée : montrés à part pour ne
+  // jamais gonfler les compteurs du mois en cours de recouvrement.
+  const totalArrieres = totals.total_arrieres || 0;
   const locationText = [p.ville, p.commune, p.quartier].filter(Boolean).join(' · ') || '—';
 
   // Encaisser un loyer pour un bail, depuis la maison. presetMonth = échéance ciblée.
@@ -331,11 +337,14 @@ export async function render() {
   }
 
   function renderSub(s) {
-    const r = s.resume || { total_attendu: 0, total_paye: 0, reste: 0, mois_retard: 0 };
+    const r = s.resume || { total_attendu: 0, total_paye: 0, reste: 0, mois_retard: 0, arrieres: 0, arrieres_mois: 0 };
     const card = el('<div class="card card-pad" style="margin-bottom:14px;border-left:4px solid #2563eb"></div>');
     const retard = r.mois_retard > 0
       ? `<span class="badge badge-red">${r.mois_retard} mois en retard</span>`
       : '<span class="badge badge-green">À jour</span>';
+    const arriere = r.arrieres > 0
+      ? `<span class="badge badge-amber">${r.arrieres_mois} mois d’arriéré</span>`
+      : '';
     const head = el(`
       <div>
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;align-items:flex-start">
@@ -350,6 +359,7 @@ export async function render() {
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
             ${badge(s.statut === 'Active' ? 'Bail actif' : 'Bail désactivé', s.statut === 'Active' ? 'green' : 'gray')}
             ${s.statut === 'Active' ? retard : ''}
+            ${arriere}
           </div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px;margin:12px 0">
@@ -357,9 +367,10 @@ export async function render() {
           ${miniStat('Caution', fmt.money(s.montant_caution))}
           ${miniStat('Avance', fmt.money(s.montant_avance))}
           ${miniStat('Garantie', fmt.money(s.montant_garantie))}
-          ${miniStat('Total attendu', fmt.money(r.total_attendu))}
-          ${miniStat('Total payé', fmt.money(r.total_paye))}
-          ${miniStat('Reste dû', fmt.money(r.reste), r.reste > 0)}
+          ${miniStat('Attendu sur la période', fmt.money(r.total_attendu))}
+          ${miniStat('Payé sur la période', fmt.money(r.total_paye))}
+          ${miniStat('Reste dû sur la période', fmt.money(r.reste), r.reste > 0)}
+          ${miniStat('Arriérés antérieurs', fmt.money(r.arrieres || 0), (r.arrieres || 0) > 0)}
         </div>
         ${s.autre_frais || s.montant_autre_frais ? `<div class="muted" style="font-size:13px;margin-bottom:10px">Autres frais : ${displayFees(s.autre_frais)} — total ${fmt.money(s.montant_autre_frais)}</div>` : ''}
       </div>`);
@@ -442,6 +453,7 @@ export async function render() {
         <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px">
           <div>
             <div class="muted" style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:800">Fiche du bien — ${escapeHtml((data.periode && data.periode.label) || '')}</div>
+            <div class="muted" style="font-size:12.5px;margin-top:4px">Les montants ci-dessous ne concernent que cette période : le compteur repart de zéro à chaque mois.</div>
             <h2 style="font-size:21px;margin:5px 0 4px;color:#0f172a">${icon('houses', 22)} ${escapeHtml(p.type_construction || 'Bien')}${p.designation ? ' — ' + escapeHtml(p.designation) : ''}</h2>
             <div class="muted" style="font-size:13px">Code : <span style="font-family:monospace;font-weight:800;color:#0f172a">${escapeHtml(p.code)}</span></div>
           </div>
@@ -455,7 +467,8 @@ export async function render() {
           ${miniStat('À jour / En retard', `${fmt.int(actifs.length - enRetard)} / ${fmt.int(enRetard)}`, enRetard > 0)}
           ${miniStat('Loyers attendus', fmt.money(totalAttendu))}
           ${miniStat('Loyers encaissés', fmt.money(totals.total_paye))}
-          ${miniStat('Impayés', fmt.money(totalImpaye), totalImpaye > 0)}
+          ${miniStat('Impayés de la période', fmt.money(totalImpaye), totalImpaye > 0)}
+          ${miniStat('Arriérés antérieurs', fmt.money(totalArrieres), totalArrieres > 0)}
           ${miniStat('Dépenses / travaux', fmt.money(totals.total_reparations))}
           ${miniStat('Net déjà reversé', fmt.money(totals.total_reversements_net))}
         </div>

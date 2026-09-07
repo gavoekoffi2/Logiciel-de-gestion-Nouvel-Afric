@@ -11,6 +11,7 @@ const house = read('public/js/views/maisonDetail.js');
 const payments = read('public/js/views/reglements.js');
 const recovery = read('public/js/views/recouvrement.js');
 const controls = read('public/js/periodControls.js');
+const dashboard = read('public/js/views/dashboard.js');
 
 for (const [name, source] of [['fiche du bien', house], ['règlements', payments]]) {
   test(`${name} uses the shared previous-month rent default`, () => {
@@ -54,8 +55,22 @@ test('the recovery screen only offers rent months that are already due', () => {
   assert.match(recovery, /syncMonthOptions/);
 });
 
-test('the property file opens on the whole lease history, not a single month', () => {
-  assert.match(house, /periodState\(hashParams, 'all'\)/);
+// Compteur mensuel : les ecrans de suivi s'ouvrent sur le mois a recouvrer, pas
+// sur un cumul. C'est la correction du bug « les montants du mois passe restent
+// dans le tableau et s'additionnent aux nouveaux ».
+test('the property file and the dashboard open on the month being collected', () => {
+  assert.match(house, /periodState\(hashParams, 'current'\)/);
+  assert.match(dashboard, /periodState\(new URLSearchParams\(location\.hash\.split\('\?'\)\[1\] \|\| ''\), 'current'\)/);
+});
+
+test('monthly screens show previous arrears separately instead of adding them up', () => {
+  assert.match(house, /Arriérés antérieurs/);
+  assert.match(recovery, /Arriérés antérieurs/);
+  assert.match(recovery, /Encaissé ce mois/);
+  assert.match(recovery, /Compteur mensuel/);
+  // Le total d'une maison ne doit plus etre presente comme un cumul.
+  assert.match(recovery, /TOTAUX DU MOIS/);
+  assert.doesNotMatch(recovery, /colspan="5">TOTAUX</);
 });
 
 test('the bulk collection screen states and enforces the postpaid rule', () => {

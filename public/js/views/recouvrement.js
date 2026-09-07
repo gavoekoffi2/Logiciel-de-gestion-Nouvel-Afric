@@ -1,4 +1,4 @@
-import { api, icon, el, escapeHtml, fmt, MOIS, pageHeader, printDocument, docHeader, openModal, toast } from '../core.js';
+import { api, icon, el, escapeHtml, fmt, badge, MOIS, pageHeader, printDocument, docHeader, openModal, toast } from '../core.js';
 import { previousRentPeriod } from '../periodControls.js';
 
 function chip(label, value, danger) {
@@ -9,6 +9,19 @@ function chip(label, value, danger) {
 }
 
 const grid = (inner) => `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">${inner}</div>`;
+
+// Statut du locataire POUR LE MOIS AFFICHE uniquement.
+const STATUT_COULEUR = {
+  'Payé': 'green',
+  'Partiel': 'amber',
+  'Impayé': 'red',
+  'Hors bail': 'gray',
+};
+function statutMois(l) {
+  const statut = l.statut_mois || (l.ecart > 0 ? 'Impayé' : 'Payé');
+  const libelle = statut === 'Hors bail' ? 'Non concerné' : statut;
+  return badge(libelle, STATUT_COULEUR[statut] || 'gray');
+}
 
 export async function render() {
   // Location a terme echu : le dernier mois EXIGIBLE est le mois precedent
@@ -32,6 +45,12 @@ export async function render() {
         </div>
         <div class="spacer"></div>
         <button class="btn btn-ghost" id="printBtn">${icon('print', 16)} Imprimer le rapport</button>
+      </div>
+      <div class="alert alert-info" style="margin-bottom:14px">
+        <b>Compteur mensuel.</b> Ce tableau ne contient que le mois sélectionné : les loyers
+        encaissés les mois précédents n’y sont jamais rajoutés, le compteur repart de zéro à
+        chaque nouveau mois. Les retards des mois antérieurs restent visibles dans la colonne
+        <b>Arriérés</b>, comptés à part.
       </div>
       <div id="avis"></div>
       <div id="recap"></div>
@@ -70,11 +89,13 @@ export async function render() {
     const r = d.recap;
     recapBox.innerHTML = `
       <div class="card card-pad" style="margin-bottom:16px;background:linear-gradient(120deg,#0f6e4f,#0b5740);color:#eafff6;border:none">
-        <h3 style="color:#fff;font-size:16px;margin:0 0 10px">Récapitulatif du recouvrement — ${escapeHtml(d.mois)} ${d.annee}</h3>
+        <h3 style="color:#fff;font-size:16px;margin:0 0 2px">Récapitulatif du recouvrement — ${escapeHtml(d.mois)} ${d.annee}</h3>
+        <div style="color:#bfe9d8;font-size:12.5px;margin:0 0 10px">Uniquement le mois de ${escapeHtml(d.mois)} ${d.annee}.</div>
         ${grid(`
-          ${chip('Total dû', fmt.money(r.total_du))}
-          ${chip('Total encaissé', fmt.money(r.total_paye))}
-          ${chip('Écart (impayés)', fmt.money(r.ecart), r.ecart > 0)}
+          ${chip('Dû du mois', fmt.money(r.total_du))}
+          ${chip('Encaissé ce mois', fmt.money(r.total_paye))}
+          ${chip('Écart du mois', fmt.money(r.ecart), r.ecart > 0)}
+          ${chip('Arriérés antérieurs', fmt.money(r.total_arrieres || 0), (r.total_arrieres || 0) > 0)}
           ${chip('Réparations', fmt.money(r.reparations))}
           ${chip('Commission agence', fmt.money(r.commission_generale))}
           ${chip('SOLDE à reverser', fmt.money(r.solde), r.solde < 0)}
@@ -101,11 +122,13 @@ export async function render() {
         <td style="${td}">${escapeHtml(l.tenant_nom || '—')}</td>
         <td style="${td}">${escapeHtml(l.designation || '—')}</td>
         <td style="${tn}">${fmt.money(l.loyer)}</td>
-        <td style="${tn}">${l.mois_payes}<br><span class="muted">${escapeHtml((l.mois_payes_liste || []).join(', ') || '—')}</span>${l.mois_credit ? `<br><span style="color:#0f6e4f;font-size:12px">Crédit: ${escapeHtml((l.mois_credit_liste || []).join(', '))}</span>` : ''}</td>
-        <td style="${tn}">${l.mois_dus > 0 ? `<b style="color:#b45309">${l.mois_dus}</b><br><span class="muted">${escapeHtml((l.mois_dus_liste || []).join(', '))}</span>` : 0}</td>
+        <td style="${td}">${statutMois(l)}${l.mois_credit ? `<br><span style="color:#0f6e4f;font-size:12px">Avance : ${escapeHtml((l.mois_credit_liste || []).join(', '))}</span>` : ''}</td>
         <td style="${tn}">${fmt.money(l.montant_du)}</td>
         <td style="${tn}">${fmt.money(l.montant_paye)}</td>
         <td style="${tn}">${l.ecart > 0 ? `<b style="color:#b91c1c">${fmt.money(l.ecart)}</b>` : fmt.money(0)}</td>
+        <td style="${tn}">${l.arrieres > 0
+          ? `<b style="color:#b45309">${fmt.money(l.arrieres)}</b><br><span class="muted" style="font-size:11.5px">${escapeHtml((l.arrieres_liste || []).join(', '))}</span>`
+          : fmt.money(0)}</td>
         <td style="${td}">${escapeHtml(l.numero_recu || '—')}</td>
       </tr>`).join('');
 
@@ -122,23 +145,25 @@ export async function render() {
         <table style="width:100%;border-collapse:collapse">
           <thead><tr style="background:#f1f5f9">
             <th style="${td};text-align:left">Locataire</th><th style="${td};text-align:left">Désignation</th>
-            <th style="${tn}">Loyer</th><th style="${tn}">Mois payés</th><th style="${tn}">Mois dûs</th>
-            <th style="${tn}">Dû</th><th style="${tn}">Payé</th><th style="${tn}">Écart</th><th style="${td};text-align:left">N° reçu</th>
+            <th style="${tn}">Loyer</th><th style="${td};text-align:left">Statut du mois</th>
+            <th style="${tn}">Dû du mois</th><th style="${tn}">Encaissé ce mois</th><th style="${tn}">Écart du mois</th>
+            <th style="${tn}">Arriérés antérieurs</th><th style="${td};text-align:left">N° reçu</th>
           </tr></thead>
           <tbody>${lignes}</tbody>
           <tfoot>
             <tr style="font-weight:800;background:#f8fafc">
-              <td style="${td}" colspan="5">TOTAUX</td>
+              <td style="${td}" colspan="4">TOTAUX DU MOIS</td>
               <td style="${tn}">${fmt.money(m.total_du)}</td>
               <td style="${tn}">${fmt.money(m.total_paye)}</td>
               <td style="${tn}">${m.ecart > 0 ? `<span style="color:#b91c1c">${fmt.money(m.ecart)}</span>` : fmt.money(0)}</td>
+              <td style="${tn}">${m.total_arrieres > 0 ? `<span style="color:#b45309">${fmt.money(m.total_arrieres)}</span>` : fmt.money(0)}</td>
               <td style="${td}"></td>
             </tr>
           </tfoot>
         </table>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px">
-        ${chip('Réparations', fmt.money(m.reparations))}
+        ${chip('Réparations du mois', fmt.money(m.reparations))}
         ${chip('Commission partielle (sur encaissé)', fmt.money(m.commission_partielle))}
         ${chip('Commission générale (sur dû)', fmt.money(m.commission_generale))}
         ${chip('SOLDE à reverser', fmt.money(m.solde), m.solde < 0)}
@@ -223,7 +248,10 @@ function printReport(d) {
   const th = 'padding:5px 7px;border:1px solid #cbd5e1;font-size:12px;background:#eef2f6';
   const tdc = 'padding:5px 7px;border:1px solid #e2e8f0;font-size:12px';
   const tdr = tdc + ';text-align:right';
-  let body = `${docHeader()}<h2 class="doc-title">RAPPORT DE RECOUVREMENT — ${escapeHtml(d.mois)} ${d.annee}</h2>`;
+  let body = `${docHeader()}<h2 class="doc-title">RAPPORT DE RECOUVREMENT — ${escapeHtml(d.mois)} ${d.annee}</h2>
+    <p style="font-size:12px;margin:0 0 10px;color:#334155">État du mois de ${escapeHtml(d.mois)} ${d.annee} uniquement :
+    les loyers encaissés les mois précédents ne sont pas repris dans ces totaux. Les retards antérieurs
+    figurent à part, dans la colonne « Arriérés ant. ».</p>`;
 
   for (const z of d.zones) {
     body += `<h3 style="margin:16px 0 6px;color:#0b5740;border-bottom:2px solid #0f6e4f;padding-bottom:3px">Zone : ${escapeHtml(z.zone)}</h3>`;
@@ -232,32 +260,37 @@ function printReport(d) {
       body += `<table style="width:100%;border-collapse:collapse;margin-bottom:4px">
         <thead><tr>
           <th style="${th};text-align:left">Locataire</th><th style="${th};text-align:left">Désignation</th>
-          <th style="${th}">Loyer</th><th style="${th}">M. payés</th><th style="${th}">M. dûs</th>
-          <th style="${th}">Dû</th><th style="${th}">Payé</th><th style="${th}">Écart</th><th style="${th}">N° reçu</th>
+          <th style="${th}">Loyer</th><th style="${th}">Statut du mois</th>
+          <th style="${th}">Dû du mois</th><th style="${th}">Encaissé</th><th style="${th}">Écart du mois</th>
+          <th style="${th}">Arriérés ant.</th><th style="${th}">N° reçu</th>
         </tr></thead><tbody>`;
       for (const l of m.locataires) {
+        const statut = l.statut_mois === 'Hors bail' ? 'Non concerné' : (l.statut_mois || (l.ecart > 0 ? 'Impayé' : 'Payé'));
         body += `<tr>
           <td style="${tdc}">${escapeHtml(l.tenant_nom || '—')}</td><td style="${tdc}">${escapeHtml(l.designation || '—')}</td>
-          <td style="${tdr}">${money(l.loyer)}</td><td style="${tdr}">${l.mois_payes}<br>${escapeHtml((l.mois_payes_liste || []).join(', ') || '—')}</td><td style="${tdr}">${l.mois_dus}<br>${escapeHtml((l.mois_dus_liste || []).join(', ') || '—')}</td>
+          <td style="${tdr}">${money(l.loyer)}</td><td style="${tdc}">${escapeHtml(statut)}${l.mois_credit ? `<br>Avance : ${escapeHtml((l.mois_credit_liste || []).join(', '))}` : ''}</td>
           <td style="${tdr}">${money(l.montant_du)}</td><td style="${tdr}">${money(l.montant_paye)}</td><td style="${tdr}">${money(l.ecart)}</td>
+          <td style="${tdr}">${money(l.arrieres || 0)}${l.arrieres > 0 ? `<br>${escapeHtml((l.arrieres_liste || []).join(', '))}` : ''}</td>
           <td style="${tdc}">${escapeHtml(l.numero_recu || '—')}</td>
         </tr>`;
       }
       body += `</tbody><tfoot>
-        <tr style="font-weight:700;background:#f8fafc"><td style="${tdc}" colspan="5">TOTAUX</td>
-          <td style="${tdr}">${money(m.total_du)}</td><td style="${tdr}">${money(m.total_paye)}</td><td style="${tdr}">${money(m.ecart)}</td><td style="${tdc}"></td></tr>
+        <tr style="font-weight:700;background:#f8fafc"><td style="${tdc}" colspan="4">TOTAUX DU MOIS</td>
+          <td style="${tdr}">${money(m.total_du)}</td><td style="${tdr}">${money(m.total_paye)}</td><td style="${tdr}">${money(m.ecart)}</td>
+          <td style="${tdr}">${money(m.total_arrieres || 0)}</td><td style="${tdc}"></td></tr>
       </tfoot></table>
-      <div style="font-size:12px;margin:0 0 12px">Réparations : <b>${money(m.reparations)}</b> · Commission partielle : <b>${money(m.commission_partielle)}</b> · Commission générale : <b>${money(m.commission_generale)}</b> · <b>SOLDE À REVERSER : ${money(m.solde)}</b></div>`;
+      <div style="font-size:12px;margin:0 0 12px">Réparations du mois : <b>${money(m.reparations)}</b> · Commission partielle : <b>${money(m.commission_partielle)}</b> · Commission générale : <b>${money(m.commission_generale)}</b> · <b>SOLDE À REVERSER : ${money(m.solde)}</b></div>`;
     }
   }
 
   const r = d.recap;
-  body += `<h3 style="margin:18px 0 6px;color:#0b5740">RÉCAPITULATIF GÉNÉRAL</h3>
+  body += `<h3 style="margin:18px 0 6px;color:#0b5740">RÉCAPITULATIF GÉNÉRAL — ${escapeHtml(d.mois)} ${d.annee}</h3>
     <table style="width:100%;border-collapse:collapse">
-      <tr><td style="${tdc}">Total dû</td><td style="${tdr}">${money(r.total_du)}</td></tr>
-      <tr><td style="${tdc}">Total encaissé</td><td style="${tdr}">${money(r.total_paye)}</td></tr>
-      <tr><td style="${tdc}">Écart (impayés)</td><td style="${tdr}">${money(r.ecart)}</td></tr>
-      <tr><td style="${tdc}">Réparations</td><td style="${tdr}">${money(r.reparations)}</td></tr>
+      <tr><td style="${tdc}">Dû du mois</td><td style="${tdr}">${money(r.total_du)}</td></tr>
+      <tr><td style="${tdc}">Encaissé ce mois</td><td style="${tdr}">${money(r.total_paye)}</td></tr>
+      <tr><td style="${tdc}">Écart du mois (impayés du mois)</td><td style="${tdr}">${money(r.ecart)}</td></tr>
+      <tr><td style="${tdc}">Arriérés des mois antérieurs (hors totaux du mois)</td><td style="${tdr}">${money(r.total_arrieres || 0)}</td></tr>
+      <tr><td style="${tdc}">Réparations du mois</td><td style="${tdr}">${money(r.reparations)}</td></tr>
       <tr><td style="${tdc}">Commission agence (générale)</td><td style="${tdr}">${money(r.commission_generale)}</td></tr>
       <tr style="font-weight:800;background:#f0faf5"><td style="${tdc}">SOLDE TOTAL À REVERSER</td><td style="${tdr}">${money(r.solde)}</td></tr>
     </table>`;

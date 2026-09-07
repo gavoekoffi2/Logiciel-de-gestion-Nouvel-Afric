@@ -15,7 +15,7 @@ mises à jour en temps réel.
 
 | Module | Description |
 |--------|-------------|
-| **Tableau de bord** | Vue d'ensemble : nombre de propriétaires / locataires / biens, biens disponibles ou occupés, total des cautions, avances et loyers encaissés, recouvrement du mois à recouvrer, impayés, derniers paiements. |
+| **Tableau de bord** | Vue d'ensemble du **mois à recouvrer** (compteur remis à zéro chaque mois) : nombre de propriétaires / locataires / biens, biens disponibles ou occupés, cautions, avances, loyers encaissés dans le mois, impayés, derniers paiements. Le sélecteur de période permet d'afficher un cumul (« Depuis janvier », « Toutes les périodes »). |
 | **Propriétaires** | Ajout, modification, suppression et recherche des propriétaires. |
 | **Maisons / Biens** | Gestion des biens (code généré automatiquement, type, nombre de pièces, loyer, localisation, commission, statut **Disponible / Occupé** calculé automatiquement). |
 | **Locataires** | Gestion des locataires. Dans la fiche d'un bien, on peut **ajouter un locataire** ou, quand un locataire **a quitté** le logement, le **retirer du bien** (le bail est clôturé, l'historique est conservé et le logement redevient disponible). Un bail clôturé peut ensuite être **supprimé définitivement** en cas d'erreur de saisie. |
@@ -44,6 +44,25 @@ Toute l'application applique cette règle, sans exception :
 
 La règle est portée par un seul fichier, [`src/rentCycle.js`](src/rentCycle.js) — tout calcul
 de « quel mois de loyer est dû aujourd'hui ? » doit passer par lui.
+
+### 🔄 Règle capitale : le compteur repart de **zéro chaque mois**
+
+Un état mensuel ne doit contenir **que son mois**. Les loyers encaissés en août
+n'apparaissent jamais dans le total de septembre : sans cela, l'agence est
+incapable de savoir combien elle a réellement récolté dans le mois.
+
+- **État de recouvrement.** « Dû du mois », « Encaissé ce mois » et « Écart du mois »
+  ne portent que sur le mois sélectionné. Changer de mois remet ces compteurs à zéro.
+- **Tableau de bord** et **fiche d'un bien** s'ouvrent sur le **mois à recouvrer**, pas
+  sur un cumul. Le sélecteur de période permet toujours d'afficher « Depuis janvier »
+  ou « Toutes les périodes » quand on veut un cumul.
+- **Les retards ne sont pas perdus.** Ce qui reste dû au titre des mois antérieurs est
+  chiffré à part, dans la colonne **« Arriérés antérieurs »**, et n'est jamais additionné
+  aux totaux du mois affiché.
+- **Un paiement reste rattaché au mois de loyer qu'il règle**, quelle que soit la date
+  d'encaissement : un loyer d'août payé en octobre reste compté dans le mois d'août.
+- **Rien à ressaisir.** Cette règle est un calcul d'affichage : elle ne modifie aucune
+  donnée enregistrée et n'exige aucune suppression ni nouvelle saisie.
 
 ### Plateforme multi-entreprises (abonnement annuel)
 L'application est une **plateforme** : chaque **entreprise** (agence) crée son propre espace

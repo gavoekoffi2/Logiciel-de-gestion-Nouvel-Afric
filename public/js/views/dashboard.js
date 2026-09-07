@@ -6,7 +6,11 @@ function stat(icClass, icName, value, label) {
 }
 
 export async function render() {
-  const selectedPeriod = periodState(new URLSearchParams(location.hash.split('?')[1] || ''), 'ytd');
+  // Compteur mensuel : le tableau de bord s'ouvre sur le mois en cours de
+  // recouvrement, jamais sur un cumul. Les chiffres repartent donc de zéro à
+  // chaque nouveau mois ; « Depuis janvier » et « Toutes les périodes » restent
+  // accessibles dans le sélecteur de période.
+  const selectedPeriod = periodState(new URLSearchParams(location.hash.split('?')[1] || ''), 'current');
   const d = await api.get('/api/dashboard?' + periodQuery(selectedPeriod));
   const prenom = (store.user.nom || store.user.email || 'utilisateur').split(' ')[0];
 
@@ -29,12 +33,13 @@ export async function render() {
       </div>
 
       <div class="section-title">${icon('money', 18)} Finances — ${escapeHtml((d.periode && d.periode.label) || '')}</div>
+      <div class="muted" style="font-size:12.5px;margin:-6px 0 10px">Montants de la période affichée uniquement — le compteur repart de zéro à chaque mois. Seul « À reverser » est un total en attente, cumulé jusqu’au reversement.</div>
       <div class="grid stats-grid">
         ${stat('ic-green', 'wallet', fmt.money(d.total_loyer), 'Total loyers encaissés')}
         ${stat('ic-blue', 'money', fmt.money(d.total_caution), 'Total cautions')}
         ${stat('ic-amber', 'money', fmt.money(d.total_avance), 'Total avances')}
         ${stat('ic-red', 'payments', fmt.money(d.impayes_montant), 'Impayés (' + d.impayes_nombre + ')')}
-        ${stat('ic-brand', 'owners', fmt.money(d.reste_a_reverser || 0), 'À reverser aux propriétaires')}
+        ${stat('ic-brand', 'owners', fmt.money(d.reste_a_reverser || 0), 'À reverser (total en attente)')}
       </div>
 
       <div class="grid" style="grid-template-columns:1.1fr 1fr;align-items:start;margin-top:18px" id="bottomGrid">

@@ -33,11 +33,11 @@ export async function render() {
       </div>
 
       <div class="section-title">${icon('money', 18)} Finances — ${escapeHtml((d.periode && d.periode.label) || '')}</div>
-      <div class="muted" style="font-size:12.5px;margin:-6px 0 10px">Montants de la période affichée uniquement — le compteur repart de zéro à chaque mois. Seul « À reverser » est un total en attente, cumulé jusqu’au reversement.</div>
+      <div class="muted" style="font-size:12.5px;margin:-6px 0 10px">Loyers encaissés et impayés : <b>période affichée uniquement</b>, le compteur repart de zéro à chaque mois. Cautions, avances et « à reverser » sont des <b>encours</b> : de l’argent détenu ou dû tant qu’il n’a pas été restitué ou reversé. Les biens supprimés ne comptent dans aucune de ces tuiles.</div>
       <div class="grid stats-grid">
         ${stat('ic-green', 'wallet', fmt.money(d.total_loyer), 'Total loyers encaissés')}
-        ${stat('ic-blue', 'money', fmt.money(d.total_caution), 'Total cautions')}
-        ${stat('ic-amber', 'money', fmt.money(d.total_avance), 'Total avances')}
+        ${stat('ic-blue', 'money', fmt.money(d.total_caution), 'Cautions détenues (baux actifs)')}
+        ${stat('ic-amber', 'money', fmt.money(d.total_avance), 'Avances détenues (baux actifs)')}
         ${stat('ic-red', 'payments', fmt.money(d.impayes_montant), 'Impayés (' + d.impayes_nombre + ')')}
         ${stat('ic-brand', 'owners', fmt.money(d.reste_a_reverser || 0), 'À reverser (total en attente)')}
       </div>

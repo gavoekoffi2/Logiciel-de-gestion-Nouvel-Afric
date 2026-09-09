@@ -61,6 +61,17 @@ incapable de savoir combien elle a réellement récolté dans le mois.
   aux totaux du mois affiché.
 - **Un paiement reste rattaché au mois de loyer qu'il règle**, quelle que soit la date
   d'encaissement : un loyer d'août payé en octobre reste compté dans le mois d'août.
+- **Les arriérés restent encaissables.** La fiche d'un bien liste les mois en retard dans
+  un tableau **« Arriérés à recouvrer »** distinct. Encaisser depuis ce tableau impute le
+  règlement **au mois en retard**, jamais au mois en cours ; et un mois choisi à la main
+  n'est plus réécrit quand on change la date d'encaissement.
+- **Flux et encours ne se mélangent pas.** Les loyers encaissés et les impayés sont des
+  **flux** du mois affiché. Les cautions, les avances et le « à reverser » sont des
+  **encours** : de l'argent détenu ou dû tant qu'il n'a pas été restitué ou reversé — ils
+  ne se remettent pas à zéro avec le mois.
+- **Un bien supprimé ne pèse plus sur les compteurs.** Ses baux et règlements restent
+  consultables dans l'historique, mais ne comptent plus dans le tableau de bord, comme
+  l'écran Reversements les ignore déjà.
 - **Rien à ressaisir.** Cette règle est un calcul d'affichage : elle ne modifie aucune
   donnée enregistrée et n'exige aucune suppression ni nouvelle saisie.
 

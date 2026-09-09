@@ -71,7 +71,7 @@ function periodBefore(back) {
 const ymd = (period) => `${period.annee}-${String(MOIS.indexOf(period.mois) + 1).padStart(2, '0')}-01`;
 
 // Une agence, un bien « Kaky 2 », un locataire dont le bail court depuis 3 mois.
-async function setup(baseUrl) {
+async function setup(baseUrl, { caution = 0, avance = 0 } = {}) {
   const email = `reset-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
   const registered = await request(baseUrl, 'POST', '/api/auth/register', {
     entreprise: 'Agence Compteur Mensuel',
@@ -97,7 +97,7 @@ async function setup(baseUrl) {
   const debut = periodBefore(2);
   const batch = await request(baseUrl, 'POST', `/api/properties/${property.data.id}/tenants`, {
     date_souscription: ymd(debut), date_entree: ymd(debut), date_debut_paiement: ymd(debut),
-    nombre_mois_caution: 0, nombre_mois_avance: 0,
+    nombre_mois_caution: caution, nombre_mois_avance: avance,
     tenants: [{ tenant_id: tenant.data.id, montant_loyer: LOYER }],
   }, cookie);
   assert.equal(batch.res.status, 200, JSON.stringify(batch.data));
@@ -266,5 +266,124 @@ test('le « à reverser » du tableau de bord reste aligné sur l’écran Rever
     assert.equal(dashboard.data.reste_a_reverser, attendu);
     // Et cela n'a pas contaminé les compteurs mensuels.
     assert.equal(dashboard.data.total_loyer, 100000);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Deuxieme signalement de l'agence :
+//   « les montants sont tellement eleves que ca ne correspond pas aux collectes.
+//     Meme quand on supprime un bien, le montant deja enregistre ne part pas. »
+//   « ceux qui ont des arrieres ne sont plus affiches, et quand on veut
+//     encaisser un arriere ca vient automatiquement sur aout. »
+// ---------------------------------------------------------------------------
+
+test('les arriérés restent affichés et encaissables quand la fiche est calée sur le mois', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, property, subscription } = await setup(baseUrl);
+    const moisAffiche = periodBefore(0);
+    const arriere = periodBefore(2);
+
+    // Seul le mois affiché est réglé : les deux mois d'avant restent dus.
+    await encaisser(baseUrl, cookie, subscription.id, moisAffiche, LOYER);
+
+    const fiche = await request(baseUrl, 'GET', `/api/properties/${property.id}/details`, null, cookie);
+    assert.equal(fiche.res.status, 200, JSON.stringify(fiche.data));
+    const sub = fiche.data.subscriptions.find((s) => s.id === subscription.id);
+
+    // L'échéancier du mois ne contient que le mois affiché…
+    assert.deepEqual(sub.echeancier.map((m) => `${m.mois} ${m.annee}`), [`${moisAffiche.mois} ${moisAffiche.annee}`]);
+    // …mais les mois en retard restent listés à part, encaissables.
+    const enRetard = sub.arrieres_echeancier || [];
+    assert.equal(enRetard.length, 2, 'les deux mois antérieurs impayés doivent rester visibles');
+    assert.ok(enRetard.some((m) => m.mois === arriere.mois && m.annee === arriere.annee));
+    for (const m of enRetard) {
+      assert.equal(m.reste, LOYER);
+      assert.equal(m.echu, true);
+    }
+    assert.equal(sub.resume.arrieres, 2 * LOYER);
+    // Et ils ne contaminent pas les compteurs du mois.
+    assert.equal(sub.resume.total_paye, LOYER);
+    assert.equal(sub.resume.total_attendu, LOYER);
+    assert.equal(sub.resume.reste, 0);
+  });
+});
+
+test('encaisser un arriéré l’impute au mois en retard, pas au mois en cours', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, property, subscription } = await setup(baseUrl);
+    const moisAffiche = periodBefore(0);
+    const arriere = periodBefore(2);
+
+    await encaisser(baseUrl, cookie, subscription.id, arriere, LOYER);
+
+    // Le règlement est bien tombé sur le mois d'arriéré.
+    const rapportArriere = await recouvrement(baseUrl, cookie, arriere);
+    assert.equal(ligneDe(rapportArriere).montant_paye, LOYER);
+    // Le mois en cours de recouvrement, lui, n'a rien reçu.
+    const rapportMois = await recouvrement(baseUrl, cookie, moisAffiche);
+    assert.equal(ligneDe(rapportMois).montant_paye, 0);
+    assert.equal(ligneDe(rapportMois).ecart, LOYER);
+
+    // Et l'arriéré soldé disparaît bien de la liste des retards.
+    const fiche = await request(baseUrl, 'GET', `/api/properties/${property.id}/details`, null, cookie);
+    const sub = fiche.data.subscriptions.find((s) => s.id === subscription.id);
+    const restants = (sub.arrieres_echeancier || []).map((m) => `${m.mois} ${m.annee}`);
+    assert.equal(restants.includes(`${arriere.mois} ${arriere.annee}`), false);
+    assert.equal(sub.resume.arrieres, LOYER, 'il reste le seul mois intermédiaire impayé');
+  });
+});
+
+test('cautions et avances sont l’encours détenu, pas les baux signés dans le mois', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie } = await setup(baseUrl, { caution: 2, avance: 1 });
+
+    // Le bail a été signé il y a 3 mois. Un filtrage sur la date de signature
+    // afficherait 0 pour le mois en cours — c'est ce que voyait l'agence, à
+    // l'envers : apres une ressaisie du parc, tous les baux portaient la meme
+    // date et la tuile cumulait d'un coup toutes les cautions.
+    const dashboard = await request(baseUrl, 'GET', '/api/dashboard', null, cookie);
+    assert.equal(dashboard.data.total_caution, 2 * LOYER);
+    assert.equal(dashboard.data.total_avance, LOYER);
+
+    // L'encours ne bouge pas avec la période affichée : ce n'est pas un flux.
+    const cumul = await request(baseUrl, 'GET', '/api/dashboard?mode=all', null, cookie);
+    assert.equal(cumul.data.total_caution, 2 * LOYER);
+    assert.equal(cumul.data.total_avance, LOYER);
+  });
+});
+
+test('supprimer un bien retire ses montants des compteurs sans effacer l’historique', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, property, subscription } = await setup(baseUrl, { caution: 2 });
+    await encaisser(baseUrl, cookie, subscription.id, periodBefore(0), LOYER);
+
+    const avant = await request(baseUrl, 'GET', '/api/dashboard', null, cookie);
+    assert.equal(avant.data.total_loyer, LOYER);
+    assert.equal(avant.data.total_caution, 2 * LOYER);
+    assert.ok(avant.data.reste_a_reverser > 0);
+
+    const supprime = await request(baseUrl, 'DELETE', `/api/properties/${property.id}`, null, cookie);
+    assert.equal(supprime.res.status, 200, JSON.stringify(supprime.data));
+
+    // Plus rien de ce bien ne doit peser sur les compteurs.
+    const apres = await request(baseUrl, 'GET', '/api/dashboard', null, cookie);
+    assert.equal(apres.data.total_loyer, 0);
+    assert.equal(apres.data.total_caution, 0);
+    assert.equal(apres.data.total_avance, 0);
+    assert.equal(apres.data.loyer_attendu, 0);
+    assert.equal(apres.data.impayes_montant, 0);
+    assert.equal(apres.data.reste_a_reverser, 0);
+
+    // Le tableau de bord dit désormais la même chose que l'écran Reversements.
+    const du = await request(baseUrl, 'GET', '/api/payouts/due', null, cookie);
+    assert.equal(du.data.reduce((total, r) => total + r.net, 0), apres.data.reste_a_reverser);
+
+    // L'historique comptable, lui, reste consultable.
+    const bail = await request(baseUrl, 'GET', `/api/subscriptions/${subscription.id}`, null, cookie);
+    assert.equal(bail.res.status, 200);
+    assert.equal(bail.data.statut, 'Desactive');
+    const reglements = await request(baseUrl, 'GET', '/api/payments?mode=all', null, cookie);
+    assert.equal(reglements.data.length, 1, 'le règlement reste dans le journal des règlements');
   });
 });

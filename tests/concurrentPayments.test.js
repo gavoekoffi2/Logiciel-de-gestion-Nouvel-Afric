@@ -231,7 +231,15 @@ test('property deletion succeeds even when an active subscription exists', async
     assert.equal(archived.data.statut, 'Desactive');
     assert.equal(archived.data.property_id, null);
     assert.match(archived.data.date_fin, /^\d{4}-\d{2}-\d{2}$/);
+    // Un bien supprimé ne doit plus peser sur les compteurs. L'agence signalait
+    // exactement l'inverse : « même quand on supprime un bien, le montant déjà
+    // enregistré ne part pas ». Le bail reste archivé et consultable (assertions
+    // ci-dessus), mais son loyer ne fait plus partie de ce qui est attendu.
     const afterDashboard = await request(baseUrl, 'GET', '/api/dashboard?mode=range&from=2026-01&to=2026-02', null, adminCookie);
-    assert.equal(afterDashboard.data.loyer_attendu, beforeDashboard.data.loyer_attendu);
+    assert.ok(beforeDashboard.data.loyer_attendu > 0, 'le bien pesait bien sur le tableau de bord avant sa suppression');
+    assert.equal(afterDashboard.data.loyer_attendu, 0);
+    assert.equal(afterDashboard.data.total_loyer, 0);
+    assert.equal(afterDashboard.data.reste_a_reverser, 0);
+    assert.equal(afterDashboard.data.impayes_montant, 0);
   });
 });

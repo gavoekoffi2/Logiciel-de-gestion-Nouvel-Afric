@@ -967,6 +967,7 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     // suivant. Les baux clôturés conservent leur échéancier historique jusqu'au
     // dernier mois dû.
     let echeancier = [];
+    const arrieres_echeancier = [];
     let arrieres = 0;
     let arrieres_mois = 0;
     if (s.date_debut_paiement) {
@@ -986,13 +987,20 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
         return { annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, echu, statut };
       };
       echeancier = calendrier.filter((mm) => periodInRange(mm, range)).map(ligne);
-      // Retards des mois situes AVANT la periode affichee : comptes a part pour
-      // qu'un impaye ancien reste visible sans gonfler le compteur du mois.
+      // Retards des mois situes AVANT la periode affichee. Ils sont renvoyes
+      // dans une LISTE SEPAREE, pas dans l'echeancier : l'agence doit pouvoir
+      // les voir et les encaisser meme quand l'ecran est cale sur le mois en
+      // cours, mais leurs montants ne doivent jamais entrer dans les compteurs
+      // du mois (c'est tout l'objet du compteur remis a zero).
       for (const mm of calendrier) {
         if (periodInRange(mm, range)) continue;
         if (range.from && periodIndex(mm) >= range.from.index) continue;
         const l = ligne(mm);
-        if (l.echu && l.reste > 0) { arrieres += l.reste; arrieres_mois += 1; }
+        if (l.echu && l.reste > 0) {
+          arrieres += l.reste;
+          arrieres_mois += 1;
+          arrieres_echeancier.push(l);
+        }
       }
     }
     const total_attendu = echeancier.reduce((a, m) => a + (m.echu ? m.attendu : 0), 0);
@@ -1001,6 +1009,10 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
 
     s.paiements = filteredPays;
     s.echeancier = echeancier;
+    // Les mois de retard restent encaissables depuis la fiche, dans leur propre
+    // tableau, avec le mois d'arriere reellement concerne (jamais le mois en
+    // cours de recouvrement).
+    s.arrieres_echeancier = arrieres_echeancier;
     s.resume = { nb_paiements: filteredPays.length, total_attendu, total_paye, reste, mois_retard, arrieres, arrieres_mois };
   }
 
@@ -1704,7 +1716,17 @@ router.get('/dashboard', wrap(async (req, res) => {
     db.prepare(`${PROPERTY_SELECT} WHERE p.company_id = ?`).all(cid),
   ]);
 
-  const selectedPayments = paymentRows.map((p) => {
+  // Un reglement dont le BIEN a ete supprime n'est plus rattachable a un
+  // proprietaire : l'ecran Reversements l'ignore deja (jointure stricte sur
+  // properties). Le tableau de bord doit l'ignorer aussi, sinon il annonce des
+  // montants introuvables ailleurs dans le logiciel — c'est ce qui gonflait
+  // « loyers encaisses » et « a reverser » apres des suppressions de biens.
+  const livePaymentRows = paymentRows.filter((p) => p.property_id && p.property_code);
+  // Idem pour les baux : un bail rattache a un bien supprime ne represente plus
+  // ni une caution detenue ni un loyer reclamable.
+  const liveSubscriptions = subscriptions.filter((s) => s.property_id);
+
+  const selectedPayments = livePaymentRows.map((p) => {
     const selected = paymentAmountsInRange(p, range);
     return selected.matches ? {
       ...p,
@@ -1716,20 +1738,15 @@ router.get('/dashboard', wrap(async (req, res) => {
     } : null;
   }).filter(Boolean);
 
-  const subscriptionInRange = (s) => {
-    const match = String(s.date_souscription || s.date_entree || '').match(/^(\d{4})-(\d{2})/);
-    if (!match) return range.mode === 'all';
-    return periodInRange({ mois: MOIS[Number(match[2]) - 1], annee: Number(match[1]) }, range);
-  };
-  const paymentsBySubscription = paymentRows.reduce((grouped, payment) => {
+  const paymentsBySubscription = livePaymentRows.reduce((grouped, payment) => {
     if (payment.subscription_id) (grouped[payment.subscription_id] ||= []).push(payment);
     return grouped;
   }, {});
-  const paidMonthMap = buildPaidMonthMap(paymentRows);
+  const paidMonthMap = buildPaidMonthMap(livePaymentRows);
   let expected = 0;
   let unpaidCount = 0;
   let unpaidAmount = 0;
-  for (const subscription of subscriptions.filter((s) => s.date_debut_paiement)) {
+  for (const subscription of liveSubscriptions.filter((s) => s.date_debut_paiement)) {
     const end = subscriptionEndPeriod(subscription, paymentsBySubscription[subscription.id] || []);
     if (!end) continue;
     const periods = monthsUntil(subscription.date_debut_paiement, end.annee, end.mois)
@@ -1752,9 +1769,15 @@ router.get('/dashboard', wrap(async (req, res) => {
   // pas un flux du mois : on la calcule sur tous les loyers encaisses non encore
   // reverses, quelle que soit leur periode. Sinon le tableau de bord annoncerait
   // un montant plus faible que l'ecran Reversements, qui lui fait foi.
-  const aReverser = paymentRows.filter((p) => !p.payout_id && p.montant_paye > 0)
+  const aReverser = livePaymentRows.filter((p) => !p.payout_id && p.montant_paye > 0)
     .reduce((sum, p) => sum + p.montant_paye - Math.round(p.montant_paye * (p.part_commission || 0) / 100), 0);
-  const scopedSubscriptions = subscriptions.filter(subscriptionInRange);
+  // Cautions et avances sont de l'argent DETENU par l'agence jusqu'au depart du
+  // locataire, pas un flux du mois. Les filtrer sur la date de signature du bail
+  // n'avait aucun sens : apres une ressaisie du parc, tous les baux portaient la
+  // date du jour et la tuile affichait d'un coup la totalite des cautions.
+  // On compte donc ce qui est reellement detenu : les baux ACTIFS d'un bien
+  // existant.
+  const heldSubscriptions = liveSubscriptions.filter((s) => s.statut === 'Active');
   const nb_maisons = maisons.n;
   const nb_occupees = occupees.n;
   const label = rangeLabel(range);
@@ -1770,8 +1793,8 @@ router.get('/dashboard', wrap(async (req, res) => {
     nb_maisons,
     nb_occupees,
     nb_disponibles: nb_maisons - nb_occupees,
-    total_caution: scopedSubscriptions.reduce((sum, s) => sum + (s.montant_caution || 0), 0),
-    total_avance: scopedSubscriptions.reduce((sum, s) => sum + (s.montant_avance || 0), 0),
+    total_caution: heldSubscriptions.reduce((sum, s) => sum + (s.montant_caution || 0), 0),
+    total_avance: heldSubscriptions.reduce((sum, s) => sum + (s.montant_avance || 0), 0),
     total_loyer: totalPaid,
     loyer_attendu: expected,
     loyer_encaisse_mois: totalPaid,

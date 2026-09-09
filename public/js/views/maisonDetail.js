@@ -111,13 +111,22 @@ export async function render() {
     const loyer = s.montant_loyer || 0;
     const pm = presetMonth || previousRentPeriod();
     const avance = presetMonth && presetMonth.echu === false;
+    // Un arriéré est un mois échu, antérieur au dernier mois exigible.
+    const arriere = !!presetMonth && presetMonth.echu === true
+      && `${presetMonth.annee}-${presetMonth.mois}` !== `${previousRentPeriod().annee}-${previousRentPeriod().mois}`;
+    // Dès que l'utilisateur choisit lui-même un mois (cas d'un arriéré saisi à
+    // la main), on ne le lui écrase plus : changer la date d'encaissement ne
+    // doit plus ramener le formulaire au mois en cours de recouvrement.
+    let moisChoisiManuellement = false;
     formModal({
-      title: (avance ? 'Encaisser par avance — ' : 'Encaisser un loyer — ') + (s.tenant_nom || ''),
+      title: (avance ? 'Encaisser par avance — ' : (arriere ? 'Encaisser un arriéré — ' : 'Encaisser un loyer — ')) + (s.tenant_nom || ''),
       fields: [
         { name: 'mois_concerne', label: 'Mois de loyer réglé', type: 'select', required: true, options: MOIS,
           hint: avance
             ? 'Ce mois n’est pas terminé : il s’agit d’un paiement anticipé, il n’est pas réclamé au locataire.'
-            : 'Loyers à terme échu : par défaut, le mois précédent, déjà consommé.' },
+            : (arriere
+              ? `Arriéré : ce règlement sera enregistré sur ${pm.mois} ${pm.annee}, pas sur le mois en cours.`
+              : 'Loyers à terme échu : par défaut, le mois précédent. Vous pouvez choisir un mois antérieur pour encaisser un arriéré.') },
         { name: 'annee_concernee', label: 'Année concernée', type: 'number', required: true },
         { name: 'montant_a_payer', label: 'Montant à payer', type: 'number', readonly: true },
         { name: 'montant_paye', label: 'Montant payé', type: 'number', required: true, min: 0 },
@@ -134,7 +143,10 @@ export async function render() {
         date: fmt.today(),
       },
       onChange: (v, changed, set) => {
-        if (changed !== 'date' || presetMonth || !v.date) return;
+        if (changed === 'mois_concerne' || changed === 'annee_concernee') { moisChoisiManuellement = true; return; }
+        // La date d'encaissement ne repositionne le mois de loyer que tant que
+        // personne ne l'a choisi explicitement.
+        if (changed !== 'date' || presetMonth || moisChoisiManuellement || !v.date) return;
         const period = previousRentPeriod(v.date);
         set('mois_concerne', period.mois);
         set('annee_concernee', period.annee);
@@ -339,9 +351,12 @@ export async function render() {
   function renderSub(s) {
     const r = s.resume || { total_attendu: 0, total_paye: 0, reste: 0, mois_retard: 0, arrieres: 0, arrieres_mois: 0 };
     const card = el('<div class="card card-pad" style="margin-bottom:14px;border-left:4px solid #2563eb"></div>');
+    // « À jour » ne parle que de la période affichée : un locataire peut avoir
+    // soldé le mois en cours tout en trainant des arriérés. Le libellé le dit,
+    // sinon les deux badges se contredisent à l'écran.
     const retard = r.mois_retard > 0
       ? `<span class="badge badge-red">${r.mois_retard} mois en retard</span>`
-      : '<span class="badge badge-green">À jour</span>';
+      : '<span class="badge badge-green">Période à jour</span>';
     const arriere = r.arrieres > 0
       ? `<span class="badge badge-amber">${r.arrieres_mois} mois d’arriéré</span>`
       : '';
@@ -412,6 +427,39 @@ export async function render() {
         ],
         empty: 'Aucune échéance.',
       }));
+
+      // ARRIERES : les mois échus non soldés situés AVANT la période affichée.
+      // Ils ont leur propre tableau — visibles et encaissables même quand
+      // l'écran est calé sur le mois en cours — mais leurs montants n'entrent
+      // pas dans les compteurs du mois.
+      const arr = s.arrieres_echeancier || [];
+      if (arr.length) {
+        card.appendChild(el(`<div style="margin:16px 0 8px">
+          <div style="font-weight:800;font-size:13.5px;color:#b45309">
+            ${icon('clock', 15)} Arriérés à recouvrer — ${arr.length} mois, ${fmt.money(r.arrieres || 0)}
+          </div>
+          <div class="muted" style="font-size:12.5px;margin-top:3px">Mois antérieurs restés impayés. Encaisser ici enregistre le loyer <b>sur le mois concerné</b>, pas sur le mois en cours.</div>
+        </div>`));
+        card.appendChild(dataTable({
+          columns: [
+            { label: 'Période en retard', render: (m) => `<b>${escapeHtml(m.mois)} ${m.annee}</b>` },
+            { label: 'Attendu', num: true, render: (m) => fmt.money(m.attendu) },
+            { label: 'Déjà payé', num: true, render: (m) => fmt.money(m.paye) },
+            { label: 'Reste dû', num: true, render: (m) => `<b style="color:#b91c1c">${fmt.money(m.reste)}</b>` },
+            { label: 'Statut', render: (m) => badge(m.statut, m.statut === 'Partiel' ? 'amber' : 'red') },
+          ],
+          rows: arr,
+          actions: [
+            {
+              title: (m) => `Encaisser l’arriéré de ${m.mois} ${m.annee}`,
+              icon: 'collect',
+              variant: 'btn-accent',
+              onClick: (m) => openEncaisser(s, m),
+            },
+          ],
+          empty: 'Aucun arriéré.',
+        }));
+      }
     } else if ((s.paiements || []).length) {
       card.appendChild(dataTable({
         columns: [

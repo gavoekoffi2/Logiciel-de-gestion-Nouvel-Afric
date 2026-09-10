@@ -387,3 +387,81 @@ test('supprimer un bien retire ses montants des compteurs sans effacer l’histo
     assert.equal(reglements.data.length, 1, 'le règlement reste dans le journal des règlements');
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// Troisieme signalement : « les arrieres des locataires ne s'affichent pas.
+// Il faut que ca s'affiche, pour qu'on sache combien de mois chaque locataire
+// doit. »
+// ---------------------------------------------------------------------------
+
+test('la liste des locataires indique combien de mois chacun doit', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, subscription } = await setup(baseUrl);
+
+    // Bail ouvert il y a 3 mois, rien de payé : 3 mois échus restent dus.
+    const liste = await request(baseUrl, 'GET', '/api/tenants', null, cookie);
+    assert.equal(liste.res.status, 200, JSON.stringify(liste.data));
+    const locataire = liste.data[0];
+    assert.equal(locataire.mois_dus, 3);
+    assert.equal(locataire.montant_du, 3 * LOYER);
+    assert.equal(locataire.mois_dus_liste.length, 3);
+    assert.equal(locataire.premier_mois_du, `${periodBefore(2).mois} ${periodBefore(2).annee}`);
+    // Le mois civil en cours n'est jamais réclamé : il n'est pas encore exigible.
+    const moisCourant = MOIS[new Date().getMonth()];
+    assert.equal(locataire.mois_dus_liste.some((m) => m.startsWith(moisCourant)), false);
+
+    // Encaisser un mois le retire de la liste des mois dus.
+    await encaisser(baseUrl, cookie, subscription.id, periodBefore(2), LOYER);
+    const apres = await request(baseUrl, 'GET', '/api/tenants', null, cookie);
+    assert.equal(apres.data[0].mois_dus, 2);
+    assert.equal(apres.data[0].montant_du, 2 * LOYER);
+
+    // Un paiement partiel laisse le mois dû, pour le reste seulement.
+    await encaisser(baseUrl, cookie, subscription.id, periodBefore(1), 100000);
+    const partiel = await request(baseUrl, 'GET', '/api/tenants', null, cookie);
+    assert.equal(partiel.data[0].mois_dus, 2);
+    assert.equal(partiel.data[0].montant_du, 2 * LOYER - 100000);
+  });
+});
+
+test('la fiche d’un locataire détaille les mois qu’il doit, un par un', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, subscription, property } = await setup(baseUrl);
+    await encaisser(baseUrl, cookie, subscription.id, periodBefore(1), LOYER);
+
+    const liste = await request(baseUrl, 'GET', '/api/tenants', null, cookie);
+    const fiche = await request(baseUrl, 'GET', `/api/tenants/${liste.data[0].id}/details`, null, cookie);
+    assert.equal(fiche.res.status, 200, JSON.stringify(fiche.data));
+
+    // Les deux mois restants, du plus ancien au plus récent, avec leur bien.
+    const dus = fiche.data.arrieres.map((m) => `${m.mois} ${m.annee}`);
+    assert.deepEqual(dus, [
+      `${periodBefore(2).mois} ${periodBefore(2).annee}`,
+      `${periodBefore(0).mois} ${periodBefore(0).annee}`,
+    ]);
+    for (const m of fiche.data.arrieres) {
+      assert.equal(m.reste, LOYER);
+      assert.equal(m.property_code, property.code);
+      assert.equal(m.statut, 'Impayé');
+    }
+    assert.equal(fiche.data.totals.mois_dus, 2);
+    assert.equal(fiche.data.totals.montant_du, 2 * LOYER);
+  });
+});
+
+test('un locataire à jour n’affiche aucun mois dû', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, subscription } = await setup(baseUrl);
+    for (const back of [0, 1, 2]) {
+      await encaisser(baseUrl, cookie, subscription.id, periodBefore(back), LOYER);
+    }
+    const liste = await request(baseUrl, 'GET', '/api/tenants', null, cookie);
+    assert.equal(liste.data[0].mois_dus, 0);
+    assert.equal(liste.data[0].montant_du, 0);
+    assert.equal(liste.data[0].premier_mois_du, null);
+
+    const fiche = await request(baseUrl, 'GET', `/api/tenants/${liste.data[0].id}/details`, null, cookie);
+    assert.deepEqual(fiche.data.arrieres, []);
+  });
+});

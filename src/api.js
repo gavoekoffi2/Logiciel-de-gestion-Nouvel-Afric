@@ -169,6 +169,57 @@ function subscriptionEndPeriod(subscription, payments, { includeCurrent = false,
   return end.annee * 12 + end.mois > due.annee * 12 + due.mois ? due : end;
 }
 
+// Montant deja encaisse POUR chaque mois de loyer d'un bail, sous la forme
+// { 'annee-Mois': montant }. Un reglement reste impute au mois qu'il regle,
+// quelle que soit sa date d'encaissement.
+function paidByPeriod(payments) {
+  const paid = {};
+  for (const payment of payments || []) {
+    for (const period of paymentAmountsInRange(payment, { mode: 'all' }).periodAmounts) {
+      const k = `${period.annee}-${period.mois}`;
+      paid[k] = (paid[k] || 0) + period.montant_paye;
+    }
+  }
+  return paid;
+}
+
+// LES MOIS QUE LE LOCATAIRE DOIT ENCORE : mois de loyer echus et non soldes du
+// bail, du plus ancien au plus recent. C'est la reponse a la question posee par
+// l'agence — « combien de mois chaque locataire doit-il ? » — et la source
+// unique de tous les affichages d'arrieres.
+//
+// Le mois en cours n'y figure jamais : a terme echu, son loyer n'est pas encore
+// exigible (includeCurrent: false).
+function outstandingMonths(subscription, payments, ref = new Date()) {
+  if (!subscription || !subscription.date_debut_paiement) return [];
+  const loyer = subscription.montant_loyer || 0;
+  if (loyer <= 0) return [];
+  const end = subscriptionEndPeriod(subscription, payments, { includeCurrent: false, ref });
+  if (!end) return [];
+  const paid = paidByPeriod(payments);
+  const out = [];
+  for (const mm of monthsUntil(subscription.date_debut_paiement, end.annee, end.mois)) {
+    if (!isPeriodDue(mm, ref)) continue;
+    const paye = paid[`${mm.annee}-${mm.mois}`] || 0;
+    const reste = loyer - paye;
+    if (reste > PAYMENT_TOLERANCE) {
+      out.push({ annee: mm.annee, mois: mm.mois, attendu: loyer, paye, reste, statut: paye > 0 ? 'Partiel' : 'Impayé' });
+    }
+  }
+  return out;
+}
+
+// Resume d'arrieres pret a afficher : nombre de mois dus, montant total, et
+// libelles des mois concernes (« Juin 2026, Juillet 2026 »).
+function arrearsSummary(months) {
+  return {
+    mois_dus: months.length,
+    montant_du: months.reduce((total, m) => total + m.reste, 0),
+    mois_dus_liste: months.map((m) => `${m.mois} ${m.annee}`),
+    premier_mois_du: months.length ? `${months[0].mois} ${months[0].annee}` : null,
+  };
+}
+
 // Roles possibles AU SEIN d'une entreprise (le super-admin est hors entreprise).
 const COMPANY_ROLES = ['admin', 'secretaire', 'assistant'];
 const normRole = (r) => (COMPANY_ROLES.includes(clean(r)) ? clean(r) : 'secretaire');
@@ -280,6 +331,36 @@ router.get('/tenants', wrap(async (req, res) => {
   } else {
     rows = await db.prepare(`${base} WHERE t.company_id = ? ORDER BY t.nom_prenoms COLLATE NOCASE`).all(cid);
   }
+
+  // ARRIERES PAR LOCATAIRE. L'agence doit pouvoir lire d'un coup d'oeil, sur la
+  // liste, combien de mois chaque locataire doit encore. On charge les baux et
+  // les reglements de l'entreprise en deux requetes, puis on regroupe en
+  // memoire : une requete par locataire serait intenable sur un parc de
+  // plusieurs centaines de baux.
+  const [allSubs, allPays] = await Promise.all([
+    db.prepare('SELECT * FROM subscriptions WHERE company_id = ? AND property_id IS NOT NULL').all(cid),
+    db.prepare('SELECT subscription_id, tenant_id, mois_concerne, annee_concernee, mois_payes, montant_a_payer, montant_paye FROM payments WHERE company_id = ?').all(cid),
+  ]);
+  const paysBySub = new Map();
+  for (const payment of allPays) {
+    if (!payment.subscription_id) continue;
+    if (!paysBySub.has(payment.subscription_id)) paysBySub.set(payment.subscription_id, []);
+    paysBySub.get(payment.subscription_id).push(payment);
+  }
+  const now = new Date();
+  const arrearsByTenant = new Map();
+  for (const sub of allSubs) {
+    if (!sub.tenant_id) continue;
+    const months = outstandingMonths(sub, paysBySub.get(sub.id) || [], now);
+    if (!months.length) continue;
+    if (!arrearsByTenant.has(sub.tenant_id)) arrearsByTenant.set(sub.tenant_id, []);
+    arrearsByTenant.get(sub.tenant_id).push(...months);
+  }
+  for (const row of rows) {
+    const months = (arrearsByTenant.get(row.id) || [])
+      .sort((a, b) => periodIndex(a) - periodIndex(b));
+    Object.assign(row, arrearsSummary(months));
+  }
   res.json(rows);
 }));
 
@@ -371,15 +452,29 @@ router.get('/tenants/:id/details', wrap(async (req, res) => {
      WHERE r.tenant_id = ? AND r.company_id = ?
      ORDER BY r.annee_concernee DESC, r.id DESC`
   ).all(id, cid);
+  // Mois de loyer echus et non soldes, tous baux confondus : c'est ce que le
+  // locataire doit encore, mois par mois.
+  const now = new Date();
+  const arrieres = [];
+  for (const sub of subscriptions) {
+    if (!sub.property_id) continue;
+    const subPayments = payments.filter((x) => x.subscription_id === sub.id);
+    for (const m of outstandingMonths(sub, subPayments, now)) {
+      arrieres.push({ ...m, subscription_id: sub.id, property_code: sub.property_code, designation: sub.designation });
+    }
+  }
+  arrieres.sort((a, b) => periodIndex(a) - periodIndex(b));
+
   const totals = {
     loyers_payes: payments.reduce((a, x) => a + (x.montant_paye || 0), 0),
     reste_a_payer: payments.reduce((a, x) => a + (x.reste_a_payer || 0), 0),
+    ...arrearsSummary(arrieres),
     cautions: subscriptions.reduce((a, s) => a + (s.montant_caution || 0), 0),
     avances: subscriptions.reduce((a, s) => a + (s.montant_avance || 0), 0),
     garanties: subscriptions.reduce((a, s) => a + (s.montant_garantie || 0), 0),
     autres_frais: subscriptions.reduce((a, s) => a + (s.montant_autre_frais || 0), 0),
   };
-  res.json({ tenant, subscriptions, payments, totals });
+  res.json({ tenant, subscriptions, payments, arrieres, totals });
 }));
 
 router.put('/tenants/:id', wrap(async (req, res) => {

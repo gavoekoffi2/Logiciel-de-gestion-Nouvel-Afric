@@ -54,23 +54,53 @@ function miniStat(label, value, danger) {
   </div>`;
 }
 
+// Mois de loyer echus et non soldes d'un locataire, prets a lire dans un tableau.
+function arrearsCell(r) {
+  const mois = r.mois_dus || 0;
+  if (!mois) return '<span class="badge badge-green">À jour</span>';
+  return `<b style="color:#b91c1c">${mois} mois</b>`
+    + `<br><span class="muted" style="font-size:11.5px">${escapeHtml((r.mois_dus_liste || []).join(', '))}</span>`;
+}
+
 export async function render() {
   let q = '';
+  let seulementEnRetard = false;
   const root = el(`
     <div>
       <div class="toolbar">
         <div class="search">${icon('search', 17)}<input type="text" id="search" placeholder="Rechercher un locataire ou son bien…" /></div>
+        <div class="filters">
+          <select id="fRetard">
+            <option value="">Tous les locataires</option>
+            <option value="retard">Seulement ceux qui doivent des mois</option>
+          </select>
+        </div>
         <div class="spacer"></div>
         <button class="btn btn-primary" id="addBtn">${icon('plus', 17)} Ajouter un locataire</button>
       </div>
+      <div id="resume"></div>
       <div id="list"></div>
     </div>`);
   pageHeader(root);
   const listBox = root.querySelector('#list');
+  const resumeBox = root.querySelector('#resume');
 
   async function load() {
     listBox.innerHTML = '<div class="spinner"></div>';
-    const rows = await api.get('/api/tenants' + (q ? `?q=${encodeURIComponent(q)}` : ''));
+    resumeBox.innerHTML = '';
+    const all = await api.get('/api/tenants' + (q ? `?q=${encodeURIComponent(q)}` : ''));
+    const enRetard = all.filter((r) => (r.mois_dus || 0) > 0);
+    const rows = seulementEnRetard ? enRetard : all;
+
+    // Vue d'ensemble des retards, pour ne pas avoir à parcourir toute la liste.
+    resumeBox.innerHTML = `
+      <div class="card card-pad" style="margin-bottom:14px;display:flex;gap:22px;flex-wrap:wrap;align-items:center">
+        <div><div style="font-size:18px;font-weight:850">${fmt.int(all.length)}</div><div class="muted" style="font-size:12px">Locataires</div></div>
+        <div><div style="font-size:18px;font-weight:850;color:${enRetard.length ? '#b91c1c' : '#15803d'}">${fmt.int(enRetard.length)}</div><div class="muted" style="font-size:12px">Doivent au moins un mois</div></div>
+        <div><div style="font-size:18px;font-weight:850;color:${enRetard.length ? '#b91c1c' : '#0f172a'}">${fmt.money(enRetard.reduce((a, r) => a + (r.montant_du || 0), 0))}</div><div class="muted" style="font-size:12px">Total restant dû</div></div>
+        <div class="muted" style="font-size:12.5px;max-width:380px">Mois de loyer déjà échus et non soldés. Le mois en cours n’y figure pas : à terme échu, son loyer n’est pas encore exigible.</div>
+      </div>`;
+
     listBox.innerHTML = '';
     listBox.appendChild(dataTable({
       columns: [
@@ -78,6 +108,8 @@ export async function render() {
         { label: 'Contact', render: (r) => escapeHtml(r.contact || '—') },
         { label: 'Bien actuel', render: (r) => r.active_property_code ? `${codeCell(r.active_property_code)}<br><span class="muted">${escapeHtml(r.active_property_type || '')}${r.active_property_designation ? ' — ' + escapeHtml(r.active_property_designation) : ''}</span>` : '<span class="muted">Aucun bien actif</span>' },
         { label: 'Loyer', num: true, render: (r) => r.active_property_loyer ? fmt.money(r.active_property_loyer) : '—' },
+        { label: 'Mois dus', render: arrearsCell },
+        { label: 'Reste dû', num: true, render: (r) => (r.montant_du ? `<b style="color:#b91c1c">${fmt.money(r.montant_du)}</b>` : fmt.money(0)) },
         { label: 'Frais prévus', render: (r) => displayFees(r.autre_frais) },
         { label: 'Caution', num: true, render: (r) => fmt.money(r.caution || 0) },
       ],
@@ -87,7 +119,7 @@ export async function render() {
         { title: 'Modifier', icon: 'edit', onClick: (r) => openForm(r) },
         { title: 'Supprimer', icon: 'trash', variant: 'btn-ghost', onClick: (r) => remove(r) },
       ],
-      empty: 'Aucun locataire enregistré.',
+      empty: seulementEnRetard ? 'Aucun locataire en retard. 🎉' : 'Aucun locataire enregistré.',
     }));
   }
 
@@ -155,6 +187,7 @@ export async function render() {
   root.querySelector('#addBtn').onclick = () => openForm(null);
   let timer;
   root.querySelector('#search').addEventListener('input', (e) => { q = e.target.value.trim(); clearTimeout(timer); timer = setTimeout(load, 250); });
+  root.querySelector('#fRetard').addEventListener('change', (e) => { seulementEnRetard = e.target.value === 'retard'; load(); });
   await load();
 }
 
@@ -180,13 +213,18 @@ export async function renderDetail() {
         <div class="muted">${escapeHtml(t.contact || '—')} ${t.email ? ' · ' + escapeHtml(t.email) : ''}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin-top:16px">
           ${miniStat('Baux / biens liés', fmt.int(subs.length))}
+          ${miniStat('Mois de loyer dus', fmt.int(totals.mois_dus || 0), (totals.mois_dus || 0) > 0)}
+          ${miniStat('Montant restant dû', fmt.money(totals.montant_du || 0), (totals.montant_du || 0) > 0)}
           ${miniStat('Loyers payés (tout l’historique)', fmt.money(totals.loyers_payes))}
-          ${miniStat('Reste à payer (tout l’historique)', fmt.money(totals.reste_a_payer), totals.reste_a_payer > 0)}
           ${miniStat('Cautions', fmt.money(totals.cautions))}
           ${miniStat('Avances', fmt.money(totals.avances))}
           ${miniStat('Autres frais', fmt.money(totals.autres_frais))}
         </div>
       </div>
+      <h3 style="font-size:16px;margin:18px 0 10px">Mois de loyer dus</h3>
+      <div class="muted" style="font-size:12.5px;margin:-6px 0 10px">Mois déjà échus et non soldés. Le mois en cours n’y figure pas : à terme échu, son loyer n’est pas encore exigible. Encaissez-les depuis la fiche du bien, tableau « Arriérés à recouvrer ».</div>
+      <div id="arrieres"></div>
+
       <h3 style="font-size:16px;margin:18px 0 10px">Biens / souscriptions de ce locataire</h3>
       <div id="subs"></div>
       <h3 style="font-size:16px;margin:18px 0 10px">Paiements du locataire</h3>
@@ -194,6 +232,19 @@ export async function renderDetail() {
     </div>`);
   pageHeader(root);
   root.querySelector('#back').onclick = () => { location.hash = '#/locataires'; };
+  root.querySelector('#arrieres').appendChild(dataTable({
+    columns: [
+      { label: 'Période en retard', render: (m) => `<b>${escapeHtml(m.mois)} ${m.annee}</b>` },
+      { label: 'Bien', render: (m) => (m.property_code ? codeCell(m.property_code) : '—') },
+      { label: 'Attendu', num: true, render: (m) => fmt.money(m.attendu) },
+      { label: 'Déjà payé', num: true, render: (m) => fmt.money(m.paye) },
+      { label: 'Reste dû', num: true, render: (m) => `<b style="color:#b91c1c">${fmt.money(m.reste)}</b>` },
+      { label: 'Statut', render: (m) => badge(m.statut, m.statut === 'Partiel' ? 'amber' : 'red') },
+    ],
+    rows: data.arrieres || [],
+    empty: 'Ce locataire est à jour : aucun mois échu ne reste impayé. 🎉',
+  }));
+
   root.querySelector('#subs').appendChild(dataTable({
     columns: [
       { label: 'Bien', render: (s) => `${codeCell(s.property_code)}<br><span class="muted">${escapeHtml(s.type_construction || '')}${s.designation ? ' — ' + escapeHtml(s.designation) : ''}</span>` },

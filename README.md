@@ -61,6 +61,10 @@ incapable de savoir combien elle a réellement récolté dans le mois.
   aux totaux du mois affiché.
 - **Un paiement reste rattaché au mois de loyer qu'il règle**, quelle que soit la date
   d'encaissement : un loyer d'août payé en octobre reste compté dans le mois d'août.
+- **Les arriérés sont visibles partout.** La liste des **Locataires** affiche pour chacun
+  le nombre de **mois dus**, les mois concernés et le montant restant dû, avec un filtre
+  « seulement ceux qui doivent des mois » ; la **fiche d'un locataire** détaille ces mois
+  un par un. Un seul calcul les produit tous — `outstandingMonths()` dans `src/api.js`.
 - **Les arriérés restent encaissables.** La fiche d'un bien liste les mois en retard dans
   un tableau **« Arriérés à recouvrer »** distinct. Encaisser depuis ce tableau impute le
   règlement **au mois en retard**, jamais au mois en cours ; et un mois choisi à la main

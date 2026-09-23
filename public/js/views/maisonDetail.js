@@ -384,8 +384,9 @@ export async function render() {
           ${miniStat('Garantie', fmt.money(s.montant_garantie))}
           ${miniStat('Attendu sur la période', fmt.money(r.total_attendu))}
           ${miniStat('Payé sur la période', fmt.money(r.total_paye))}
+          ${miniStat('Arriérés encaissés sur la période', fmt.money(r.arrieres_encaisses || 0))}
           ${miniStat('Reste dû sur la période', fmt.money(r.reste), r.reste > 0)}
-          ${miniStat('Arriérés antérieurs', fmt.money(r.arrieres || 0), (r.arrieres || 0) > 0)}
+          ${miniStat('Arriérés encore dus', fmt.money(r.arrieres || 0), (r.arrieres || 0) > 0)}
         </div>
         ${s.autre_frais || s.montant_autre_frais ? `<div class="muted" style="font-size:13px;margin-bottom:10px">Autres frais : ${displayFees(s.autre_frais)} — total ${fmt.money(s.montant_autre_frais)}</div>` : ''}
       </div>`);
@@ -514,9 +515,11 @@ export async function render() {
           ${miniStat('Locataires actifs', fmt.int(actifs.length))}
           ${miniStat('À jour / En retard', `${fmt.int(actifs.length - enRetard)} / ${fmt.int(enRetard)}`, enRetard > 0)}
           ${miniStat('Loyers attendus', fmt.money(totalAttendu))}
-          ${miniStat('Loyers encaissés', fmt.money(totals.total_paye))}
+          ${miniStat('Loyers de la période encaissés', fmt.money(totals.total_paye))}
+          ${miniStat('Arriérés encaissés', fmt.money(totals.total_arrieres_encaisses || 0))}
+          ${miniStat('Total encaissé', fmt.money(totals.total_encaisse !== undefined ? totals.total_encaisse : totals.total_paye))}
           ${miniStat('Impayés de la période', fmt.money(totalImpaye), totalImpaye > 0)}
-          ${miniStat('Arriérés antérieurs', fmt.money(totalArrieres), totalArrieres > 0)}
+          ${miniStat('Arriérés encore dus', fmt.money(totalArrieres), totalArrieres > 0)}
           ${miniStat('Dépenses / travaux', fmt.money(totals.total_reparations))}
           ${miniStat('Net déjà reversé', fmt.money(totals.total_reversements_net))}
         </div>

@@ -16,12 +16,13 @@
 const express = require('express');
 const { db, hashPassword, computeSubscription, migrateInactiveSubscriptionDates } = require('./db');
 const { requireRole, publicUser, companyState } = require('./auth');
-const { isNoSubscriptionCompanyName } = require('./companyPolicy');
 const { normalizePaidMonths, parsePeriods, buildPaidMonthMap, summarizeRecoveryMonths } = require('./paymentPeriods');
-const { normalizeRange, periodInRange, periodIndex, paymentAmountsInRange, rangeLabel } = require('./periodRange');
+const {
+  normalizeRange, periodInRange, periodIndex, paymentAmountsInRange, arrearsCollectedInRange, rangeLabel,
+} = require('./periodRange');
 const {
   previousRentPeriod, lastDuePeriod, clampToDuePeriod, isPeriodDue, isPeriodTooFarAhead,
-  periodIndexOf, MAX_ADVANCE_MONTHS,
+  periodIndexOf, buildPeriod, MAX_ADVANCE_MONTHS,
 } = require('./rentCycle');
 
 const router = express.Router();
@@ -232,6 +233,28 @@ async function logAction(req, action, entity, label) {
       'INSERT INTO audit_log (company_id, user_id, user_nom, action, entity, label) VALUES (?,?,?,?,?,?)'
     ).run(req.companyId || null, req.userId || null, req.userNom || null, action, entity, clean(label) || null);
   } catch (e) { console.error('audit_log:', e.message); }
+}
+
+// Ligne de reglement vue depuis une periode : la part imputee aux mois de la
+// periode, plus la part qui solde des arrieres et qui a ete encaissee pendant
+// cette periode. null si le reglement ne concerne pas la periode.
+function paymentRowForRange(payment, range) {
+  const selected = paymentAmountsInRange(payment, range);
+  const arrears = arrearsCollectedInRange(payment, range);
+  if (!selected.matches && !arrears.matches) return null;
+  const montantAPayer = selected.montant_a_payer + arrears.montant_a_payer;
+  const restes = selected.reste_a_payer + arrears.reste_a_payer;
+  return {
+    ...payment,
+    montant_a_payer: montantAPayer,
+    montant_paye: selected.montant_paye + arrears.montant_paye,
+    reste_a_payer: restes,
+    statut: restes <= PAYMENT_TOLERANCE ? 'Soldé' : 'Non soldé',
+    periodes_filtrees: [...selected.selectedPeriods, ...arrears.selectedPeriods],
+    // Part du montant qui regle des arrieres (mois anterieurs a la periode).
+    arriere_encaisse: arrears.montant_paye,
+    periodes_arrieres: arrears.selectedPeriods,
+  };
 }
 
 // ===========================================================================
@@ -1011,17 +1034,9 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
   ]);
 
   const repairs = allRepairs.filter((r) => periodInRange({ mois: r.mois, annee: r.annee }, range));
-  const allPayments = paymentRows.map((p) => {
-    const selected = paymentAmountsInRange(p, range);
-    return selected.matches ? {
-      ...p,
-      montant_a_payer: selected.montant_a_payer,
-      montant_paye: selected.montant_paye,
-      reste_a_payer: selected.reste_a_payer,
-      statut: selected.statut,
-      periodes_filtrees: selected.selectedPeriods,
-    } : null;
-  }).filter(Boolean);
+  // Les arrieres encaisses pendant la periode figurent aussi dans la liste des
+  // reglements de la fiche : c'est de l'argent recolte dans le mois.
+  const allPayments = paymentRows.map((p) => paymentRowForRange(p, range)).filter(Boolean);
 
   for (const s of subs) {
     const pays = await db.prepare(
@@ -1030,19 +1045,14 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     ).all(s.id, cid);
 
     let total_paye = 0;
+    let arrieres_encaisses = 0;
     const filteredPays = [];
     for (const p of pays) {
-      const selected = paymentAmountsInRange(p, range);
-      if (!selected.matches) continue;
-      total_paye += selected.montant_paye;
-      filteredPays.push({
-        ...p,
-        montant_a_payer: selected.montant_a_payer,
-        montant_paye: selected.montant_paye,
-        reste_a_payer: selected.reste_a_payer,
-        statut: selected.statut,
-        periodes_filtrees: selected.selectedPeriods,
-      });
+      const row = paymentRowForRange(p, range);
+      if (!row) continue;
+      arrieres_encaisses += row.arriere_encaisse;
+      total_paye += row.montant_paye - row.arriere_encaisse;
+      filteredPays.push(row);
     }
 
     const loyer = s.montant_loyer || 0;
@@ -1108,7 +1118,13 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     // tableau, avec le mois d'arriere reellement concerne (jamais le mois en
     // cours de recouvrement).
     s.arrieres_echeancier = arrieres_echeancier;
-    s.resume = { nb_paiements: filteredPays.length, total_attendu, total_paye, reste, mois_retard, arrieres, arrieres_mois };
+    s.resume = {
+      nb_paiements: filteredPays.length, total_attendu, total_paye, reste, mois_retard, arrieres, arrieres_mois,
+      // Arrieres regles pendant la periode affichee : recoltes dans le mois,
+      // ils s'ajoutent au total encaisse mais pas au « paye sur la periode ».
+      arrieres_encaisses,
+      total_encaisse: total_paye + arrieres_encaisses,
+    };
   }
 
   const payoutLineRows = await db.prepare(
@@ -1134,7 +1150,11 @@ router.get('/properties/:id/details', wrap(async (req, res) => {
     .filter((v) => v.lignes_bien.length > 0);
 
   const totals = {
-    total_paye: allPayments.reduce((a, p) => a + (p.montant_paye || 0), 0),
+    // Loyers des mois de la periode…
+    total_paye: allPayments.reduce((a, p) => a + (p.montant_paye || 0) - (p.arriere_encaisse || 0), 0),
+    // …arrieres regles pendant la periode, et total reellement recolte.
+    total_arrieres_encaisses: allPayments.reduce((a, p) => a + (p.arriere_encaisse || 0), 0),
+    total_encaisse: allPayments.reduce((a, p) => a + (p.montant_paye || 0), 0),
     total_reste: allPayments.reduce((a, p) => a + (p.reste_a_payer || 0), 0),
     total_reparations: repairs.reduce((a, r) => a + (r.montant || 0), 0),
     total_reversements_net: payouts.reduce((a, v) => a + (v.lignes_bien || []).reduce((b, l) => b + (l.net || 0), 0), 0),
@@ -1205,6 +1225,18 @@ router.delete('/repairs/:id', wrap(async (req, res) => {
 // Les retards des mois anterieurs ne sont pas perdus pour autant : ils sont
 // calcules a part, dans la colonne « arrieres », et ne polluent aucun total du
 // mois.
+//
+// ARRIERES ENCAISSES. Quand un locataire regle un arriere pendant le mois de
+// recouvrement (d'apres la DATE d'encaissement), cet argent a bel et bien ete
+// recolte dans le mois : il s'ajoute au TOTAL ENCAISSE du mois et au solde a
+// reverser. Il reste en revanche hors du du et de l'ecart du mois, qui ne
+// concernent que le loyer du mois affiche.
+//   - arrieres encaisses = reglements de mois anterieurs, encaisses pendant le
+//                          recouvrement du mois affiche
+//   - total encaisse     = paye du mois + arrieres encaisses
+//   - solde              = total encaisse - reparations - commission generale
+//     (la commission generale a deja ete prise sur le du du mois en retard,
+//      elle n'est donc pas prelevee une seconde fois sur l'arriere)
 // ===========================================================================
 router.get('/recouvrement', wrap(async (req, res) => {
   const cid = req.companyId;
@@ -1223,6 +1255,10 @@ router.get('/recouvrement', wrap(async (req, res) => {
   const moisSel = periode.mois;
   const anneeSel = periode.annee;
   const emIndex = periode.monthNumber;
+  // Mois civil pendant lequel se recouvre le loyer affiche (terme echu : le
+  // loyer d'aout s'encaisse en septembre).
+  const moisEncaissement = buildPeriod(Math.floor((periode.index + 1) / 12), ((periode.index + 1) % 12) + 1);
+  const reportRange = { mode: 'month', from: periode, to: periode };
 
   const [subs, pays, reps] = await Promise.all([
     db.prepare(
@@ -1237,7 +1273,7 @@ router.get('/recouvrement', wrap(async (req, res) => {
        LEFT JOIN tenants t ON t.id = s.tenant_id AND t.company_id = s.company_id
        WHERE s.company_id = ?`
     ).all(cid),
-    db.prepare('SELECT subscription_id, mois_concerne, annee_concernee, mois_payes, nombre_mois_payes, montant_paye, numero_recu FROM payments WHERE company_id = ?').all(cid),
+    db.prepare('SELECT subscription_id, date, mois_concerne, annee_concernee, mois_payes, nombre_mois_payes, montant_a_payer, montant_paye, numero_recu FROM payments WHERE company_id = ?').all(cid),
     db.prepare('SELECT property_id, montant FROM repairs WHERE company_id = ? AND mois = ? AND annee = ?').all(cid, moisSel, anneeSel),
   ]);
 
@@ -1247,6 +1283,12 @@ router.get('/recouvrement', wrap(async (req, res) => {
   // permet ensuite d'extraire le mois affiche seul, les arrieres anterieurs, et
   // les avances, sans jamais melanger les trois.
   const payBySub = buildPaidMonthMap(pays);
+  const paymentsBySub = new Map();
+  for (const payment of pays) {
+    if (!payment.subscription_id) continue;
+    if (!paymentsBySub.has(payment.subscription_id)) paymentsBySub.set(payment.subscription_id, []);
+    paymentsBySub.get(payment.subscription_id).push(payment);
+  }
   const repByProp = new Map();
   for (const r of reps) repByProp.set(r.property_id, (repByProp.get(r.property_id) || 0) + (r.montant || 0));
 
@@ -1258,7 +1300,7 @@ router.get('/recouvrement', wrap(async (req, res) => {
     let end = { annee: anneeSel, mois: emIndex };
     if (s.statut !== 'Active') {
       const historicalEnd = lastDueAtDeparture(s.date_fin)
-        || latestPaymentPeriod(pays.filter((payment) => payment.subscription_id === s.id));
+        || latestPaymentPeriod(paymentsBySub.get(s.id) || []);
       if (!historicalEnd) continue;
       if (historicalEnd.annee * 12 + historicalEnd.mois < reportIndex) end = historicalEnd;
     }
@@ -1277,11 +1319,28 @@ router.get('/recouvrement', wrap(async (req, res) => {
     const montantDu = summary.montant_du;
     const montantPaye = summary.montant_paye;
 
+    // Arrieres regles pendant le recouvrement de ce mois : de l'argent recolte
+    // dans le mois, qui doit figurer dans le total encaisse du mois.
+    let arrieresEncaisses = 0;
+    const arrieresEncaissesMois = new Map();
+    for (const payment of paymentsBySub.get(s.id) || []) {
+      const part = arrearsCollectedInRange(payment, reportRange);
+      if (!part.matches) continue;
+      arrieresEncaisses += part.montant_paye;
+      for (const m of part.periodAmounts) {
+        const k = `${m.annee}-${m.mois}`;
+        arrieresEncaissesMois.set(k, { mois: m.mois, annee: m.annee, index: periodIndexOf(m) });
+      }
+    }
+    const arrieresEncaissesListe = [...arrieresEncaissesMois.values()]
+      .sort((a, b) => a.index - b.index)
+      .map((m) => `${m.mois} ${m.annee}`);
+
     // Un bail actif reste toujours affiche, meme sans rien a encaisser ce
     // mois-ci : le faire disparaitre laisserait croire a un oubli de saisie.
     // Un bail clos, lui, ne figure au rapport que s'il a encore quelque chose a
-    // y dire (mois du, encaissement du mois, ou arriere).
-    const concerneLeRapport = moisDuRapport.length > 0 || montantPaye > 0 || arrieres.ecart > 0;
+    // y dire (mois du, encaissement du mois, arriere du ou arriere encaisse).
+    const concerneLeRapport = moisDuRapport.length > 0 || montantPaye > 0 || arrieres.ecart > 0 || arrieresEncaisses > 0;
     if (s.statut !== 'Active' && !concerneLeRapport) continue;
 
     const recuDuMois = moisDuRapport.reduce((found, m) => {
@@ -1296,6 +1355,7 @@ router.get('/recouvrement', wrap(async (req, res) => {
         zone: s.quartier || s.commune || s.ville || 'Sans zone',
         owner_id: s.owner_id, owner_nom: s.owner_nom, owner_contact: s.owner_contact,
         part_commission: s.part_commission || 0, locataires: [], total_du: 0, total_paye: 0, total_arrieres: 0,
+        total_arrieres_encaisses: 0, total_encaisse: 0,
       };
       maisons.set(s.property_id, M);
     }
@@ -1316,14 +1376,24 @@ router.get('/recouvrement', wrap(async (req, res) => {
       arrieres: arrieres.ecart,
       arrieres_mois: arrieres.mois_dus,
       arrieres_liste: arrieres.mois_dus_liste,
+      // Arrieres REGLES pendant le recouvrement du mois : ils s'ajoutent au
+      // total encaisse du mois.
+      arrieres_encaisses: arrieresEncaisses,
+      arrieres_encaisses_liste: arrieresEncaissesListe,
+      total_encaisse: montantPaye + arrieresEncaisses,
       avance: s.montant_avance || 0, numero_recu: recuDuMois,
     });
     M.total_du += montantDu;
     M.total_paye += montantPaye;
     M.total_arrieres += arrieres.ecart;
+    M.total_arrieres_encaisses += arrieresEncaisses;
+    M.total_encaisse += montantPaye + arrieresEncaisses;
   }
 
-  const FIELDS = ['total_du', 'total_paye', 'ecart', 'total_arrieres', 'reparations', 'commission_partielle', 'commission_generale', 'solde'];
+  const FIELDS = [
+    'total_du', 'total_paye', 'total_arrieres_encaisses', 'total_encaisse', 'ecart', 'total_arrieres',
+    'reparations', 'commission_partielle', 'commission_generale', 'solde',
+  ];
   const zones = new Map();
   const recap = Object.fromEntries(FIELDS.map((k) => [k, 0]));
   for (const M of maisons.values()) {
@@ -1332,9 +1402,11 @@ router.get('/recouvrement', wrap(async (req, res) => {
     // Ecart du MOIS : somme des manques locataire par locataire, pour qu'un
     // trop-percu chez l'un ne vienne pas effacer l'impaye d'un autre.
     M.ecart = M.locataires.reduce((total, l) => total + l.ecart, 0);
-    M.commission_partielle = Math.round(M.total_paye * taux / 100);
+    // Commission partielle : sur tout ce qui a ete encaisse dans le mois,
+    // arrieres compris. Commission generale : sur le du du mois seul.
+    M.commission_partielle = Math.round(M.total_encaisse * taux / 100);
     M.commission_generale = Math.round(M.total_du * taux / 100);
-    M.solde = M.total_paye - M.reparations - M.commission_generale;
+    M.solde = M.total_encaisse - M.reparations - M.commission_generale;
     let Z = zones.get(M.zone);
     if (!Z) { Z = { zone: M.zone, maisons: [], ...Object.fromEntries(FIELDS.map((k) => [k, 0])) }; zones.set(M.zone, Z); }
     Z.maisons.push(M);
@@ -1351,6 +1423,9 @@ router.get('/recouvrement', wrap(async (req, res) => {
     periode_ajustee: periodeAjustee,
     mois_exigible: due.mois,
     annee_exigible: due.annee,
+    // Mois civil des encaissements pris en compte pour les arrieres encaisses.
+    mois_encaissement: moisEncaissement.mois,
+    annee_encaissement: moisEncaissement.annee,
     // Rappel explicite au client : les totaux ci-dessous portent sur CE MOIS
     // uniquement. Un ancien front (page gardee ouverte, cache navigateur) ne
     // peut donc pas presenter ces chiffres comme un cumul.
@@ -1381,17 +1456,9 @@ router.get('/payments', wrap(async (req, res) => {
   let rows = await db.prepare(`${PAY_SELECT} WHERE r.company_id = ? ORDER BY r.id DESC`).all(req.companyId);
   if (req.query.from || req.query.to || req.query.mode) {
     const range = normalizeRange(req.query, { mode: 'current' });
-    rows = rows.map((r) => {
-      const selected = paymentAmountsInRange(r, range);
-      return selected.matches ? {
-        ...r,
-        montant_a_payer: selected.montant_a_payer,
-        montant_paye: selected.montant_paye,
-        reste_a_payer: selected.reste_a_payer,
-        statut: selected.statut,
-        periodes_filtrees: selected.selectedPeriods,
-      } : null;
-    }).filter(Boolean);
+    // Un arriere encaisse pendant la periode y figure aussi : l'agence doit
+    // retrouver dans la liste du mois tout ce qu'elle a recolte ce mois-ci.
+    rows = rows.map((r) => paymentRowForRange(r, range)).filter(Boolean);
   }
   if (mois) rows = rows.filter((r) => r.mois_concerne === mois);
   if (annee) rows = rows.filter((r) => String(r.annee_concernee) === annee);
@@ -1480,6 +1547,9 @@ function validatePayment(r) {
   if (!r.mois_concerne) return 'Veuillez sélectionner au moins un mois payé.';
   if (!r.annee_concernee) return 'Veuillez saisir l’année concernée.';
   if (!r.montant_paye) return 'Veuillez saisir le montant payé.';
+  // Un montant negatif diminuerait en silence les totaux encaisses et le
+  // montant a reverser au proprietaire.
+  if (r.montant_paye < 0) return 'Le montant payé doit être positif.';
   // Un locataire peut payer d'avance, mais une periode situee des annees plus
   // loin traduit toujours une faute de frappe sur l'annee. Non detectee, elle
   // cree un credit fantome qui fausse le recouvrement pendant des annees.
@@ -1583,7 +1653,9 @@ router.post('/payments/bulk', wrap(async (req, res) => {
   let ignores = 0;
   for (const sid of ids) {
     const sub = await db.prepare("SELECT * FROM subscriptions WHERE id = ? AND company_id = ? AND statut='Active'").get(sid, cid);
-    if (!sub) { ignores++; continue; }
+    // Un bail sans bien (bien supprime) ne peut pas recevoir de loyer : il
+    // serait invisible partout ailleurs dans le logiciel.
+    if (!sub || !sub.property_id) { ignores++; continue; }
     // Un reglement couvrant plusieurs mois n'est pas detectable via le seul
     // `mois_concerne` (premier mois paye) : on relit la liste complete des mois
     // payes, sinon un locataire deja a jour serait encaisse deux fois.
@@ -1773,8 +1845,14 @@ router.delete('/payouts/:id', wrap(async (req, res) => {
   const cid = req.companyId;
   const id = toInt(req.params.id);
   const row = await db.prepare(`${PAYOUT_SELECT} WHERE v.id = ? AND v.company_id = ?`).get(id, cid);
-  await db.prepare('UPDATE payments SET payout_id = NULL WHERE payout_id = ? AND company_id = ?').run(id, cid);
-  await db.prepare('DELETE FROM payouts WHERE id = ? AND company_id = ?').run(id, cid);
+  if (!row) return res.status(404).json({ error: 'Reversement introuvable.' });
+  // Les deux ecritures dans une seule transaction : une coupure entre les deux
+  // laisserait des loyers rattaches a un reversement qui n'existe plus, donc
+  // jamais reversables.
+  await db.batch([
+    { sql: 'UPDATE payments SET payout_id = NULL WHERE payout_id = ? AND company_id = ?', args: [id, cid] },
+    { sql: 'DELETE FROM payouts WHERE id = ? AND company_id = ?', args: [id, cid] },
+  ]);
   if (row) await logAction(req, 'Suppression', 'Reversement', `${row.owner_nom || ''} — ${row.code}`);
   res.json({ ok: true });
 }));
@@ -1821,17 +1899,7 @@ router.get('/dashboard', wrap(async (req, res) => {
   // ni une caution detenue ni un loyer reclamable.
   const liveSubscriptions = subscriptions.filter((s) => s.property_id);
 
-  const selectedPayments = livePaymentRows.map((p) => {
-    const selected = paymentAmountsInRange(p, range);
-    return selected.matches ? {
-      ...p,
-      montant_a_payer: selected.montant_a_payer,
-      montant_paye: selected.montant_paye,
-      reste_a_payer: selected.reste_a_payer,
-      statut: selected.statut,
-      periodes_filtrees: selected.selectedPeriods,
-    } : null;
-  }).filter(Boolean);
+  const selectedPayments = livePaymentRows.map((p) => paymentRowForRange(p, range)).filter(Boolean);
 
   const paymentsBySubscription = livePaymentRows.reduce((grouped, payment) => {
     if (payment.subscription_id) (grouped[payment.subscription_id] ||= []).push(payment);
@@ -1859,7 +1927,11 @@ router.get('/dashboard', wrap(async (req, res) => {
     }
   }
 
-  const totalPaid = selectedPayments.reduce((sum, p) => sum + (p.montant_paye || 0), 0);
+  // Loyers DES MOIS de la periode (servent a la jauge attendu / encaisse)…
+  const totalPaid = livePaymentRows.reduce((sum, p) => sum + paymentAmountsInRange(p, range).montant_paye, 0);
+  // …et arrieres des mois anterieurs REGLES pendant la periode. Les deux
+  // ensemble forment ce que l'agence a reellement recolte sur la periode.
+  const arrearsCollected = livePaymentRows.reduce((sum, p) => sum + arrearsCollectedInRange(p, range).montant_paye, 0);
   // Le « reste a reverser » est une DETTE qui s'accumule jusqu'au reversement,
   // pas un flux du mois : on la calcule sur tous les loyers encaisses non encore
   // reverses, quelle que soit leur periode. Sinon le tableau de bord annoncerait
@@ -1890,8 +1962,12 @@ router.get('/dashboard', wrap(async (req, res) => {
     nb_disponibles: nb_maisons - nb_occupees,
     total_caution: heldSubscriptions.reduce((sum, s) => sum + (s.montant_caution || 0), 0),
     total_avance: heldSubscriptions.reduce((sum, s) => sum + (s.montant_avance || 0), 0),
-    total_loyer: totalPaid,
+    // Total recolte sur la periode : loyers de la periode + arrieres encaisses.
+    total_loyer: totalPaid + arrearsCollected,
+    total_encaisse: totalPaid + arrearsCollected,
+    arrieres_encaisses: arrearsCollected,
     loyer_attendu: expected,
+    // Loyers des mois de la periode seulement (compare au loyer attendu).
     loyer_encaisse_mois: totalPaid,
     impayes_nombre: unpaidCount,
     impayes_montant: unpaidAmount,
@@ -2017,11 +2093,10 @@ settingsRouter.put('/', requireRole('admin'), wrap(async (req, res) => {
   }
 
   const nextName = clean(b.entreprise) || 'Mon entreprise';
-  const forceNoSubscription = isNoSubscriptionCompanyName(nextName);
-  const sql = forceNoSubscription
-    ? 'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=?, logo=?, illimite=1, statut=\'actif\', demande_le=NULL WHERE id=?'
-    : 'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=?, logo=? WHERE id=?';
-  await db.prepare(sql).run(
+  // Renommer son entreprise ne donne JAMAIS d'acces illimite : sinon n'importe
+  // quel client pouvait s'offrir un abonnement a vie en se renommant
+  // « Nouvel Afric ». L'acces illimite s'accorde depuis l'espace super-admin.
+  await db.prepare('UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=?, logo=? WHERE id=?').run(
     nextName,
     clean(b.telephone),
     clean(b.email),

@@ -33,9 +33,10 @@ export async function render() {
       </div>
 
       <div class="section-title">${icon('money', 18)} Finances — ${escapeHtml((d.periode && d.periode.label) || '')}</div>
-      <div class="muted" style="font-size:12.5px;margin:-6px 0 10px">Loyers encaissés et impayés : <b>période affichée uniquement</b>, le compteur repart de zéro à chaque mois. Cautions, avances et « à reverser » sont des <b>encours</b> : de l’argent détenu ou dû tant qu’il n’a pas été restitué ou reversé. Les biens supprimés ne comptent dans aucune de ces tuiles.</div>
+      <div class="muted" style="font-size:12.5px;margin:-6px 0 10px">Loyers encaissés et impayés : <b>période affichée uniquement</b>, le compteur repart de zéro à chaque mois. Les <b>arriérés réglés pendant la période</b> (d’après leur date d’encaissement) s’ajoutent au total encaissé. Cautions, avances et « à reverser » sont des <b>encours</b> : de l’argent détenu ou dû tant qu’il n’a pas été restitué ou reversé. Les biens supprimés ne comptent dans aucune de ces tuiles.</div>
       <div class="grid stats-grid">
-        ${stat('ic-green', 'wallet', fmt.money(d.total_loyer), 'Total loyers encaissés')}
+        ${stat('ic-green', 'wallet', fmt.money(d.total_loyer), 'Total encaissé (loyers + arriérés)')}
+        ${stat('ic-green', 'collect', fmt.money(d.arrieres_encaisses || 0), 'dont arriérés encaissés')}
         ${stat('ic-blue', 'money', fmt.money(d.total_caution), 'Cautions détenues (baux actifs)')}
         ${stat('ic-amber', 'money', fmt.money(d.total_avance), 'Avances détenues (baux actifs)')}
         ${stat('ic-red', 'payments', fmt.money(d.impayes_montant), 'Impayés (' + d.impayes_nombre + ')')}
@@ -47,7 +48,7 @@ export async function render() {
           <h3 style="font-size:15px;margin-bottom:6px">Recouvrement — ${escapeHtml((d.periode && d.periode.label) || '')}</h3>
           <div class="muted" style="font-size:12px;margin-bottom:4px">Comparaison des loyers attendus et encaissés sur la période sélectionnée.</div>
           <div style="display:flex;justify-content:space-between;font-size:13px;color:#475569;margin:10px 0 6px">
-            <span>Encaissé : <b style="color:#15803d">${fmt.money(d.loyer_encaisse_mois)}</b></span>
+            <span>Loyers de la période encaissés : <b style="color:#15803d">${fmt.money(d.loyer_encaisse_mois)}</b></span>
             <span>Attendu : <b>${fmt.money(d.loyer_attendu)}</b></span>
           </div>
           <div style="height:12px;background:#eef2f6;border-radius:99px;overflow:hidden">
@@ -79,7 +80,7 @@ export async function render() {
   } else {
     recent.innerHTML = `<div class="table-wrap"><table class="data"><tbody>${
       d.derniers_paiements.map((p) => `<tr>
-        <td><b>${escapeHtml(p.tenant_nom || '—')}</b><br><span class="muted" style="font-size:12px">${escapeHtml(filteredPeriodText(p))}</span></td>
+        <td><b>${escapeHtml(p.tenant_nom || '—')}</b><br><span class="muted" style="font-size:12px">${escapeHtml(filteredPeriodText(p))}${p.arriere_encaisse > 0 ? ' · arriéré' : ''}</span></td>
         <td class="num">${fmt.money(p.montant_paye)}</td>
         <td>${badge(p.statut, p.statut === 'Soldé' ? 'green' : 'red')}</td>
       </tr>`).join('')

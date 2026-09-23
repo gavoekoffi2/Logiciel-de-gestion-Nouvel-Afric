@@ -66,7 +66,7 @@ export async function render() {
         { label: 'Code', render: (r) => codeCell(r.code) },
         { label: 'Locataire', render: (r) => `<b>${escapeHtml(r.tenant_nom || '—')}</b>` },
         { label: 'Bien', render: (r) => codeCell(r.property_code) },
-        { label: 'Mois affichés', render: (r) => `${(r.periodes_filtrees || []).length || r.nombre_mois_payes || 1} mois<br><span class="muted">${escapeHtml(filteredPeriodText(r))}</span>` },
+        { label: 'Mois affichés', render: (r) => `${(r.periodes_filtrees || []).length || r.nombre_mois_payes || 1} mois${r.arriere_encaisse > 0 ? ` ${badge('Arriéré encaissé', 'amber')}` : ''}<br><span class="muted">${escapeHtml(filteredPeriodText(r))}</span>` },
         { label: 'Mois dûs', render: (r) => r.nombre_mois_dus ? `${r.nombre_mois_dus} mois<br><span class="muted">${escapeHtml(monthListText(r.mois_dus))}</span>` : '—' },
         { label: 'À payer', num: true, render: (r) => fmt.money(r.montant_a_payer) },
         { label: 'Payé', num: true, render: (r) => fmt.money(r.montant_paye) },
@@ -92,6 +92,10 @@ export async function render() {
     }
     if (active.length === 0 && !row) { toast('Aucune souscription active. Créez une souscription d’abord.', 'error'); return; }
 
+    // Dès que l'utilisateur saisit lui-même les mois réglés (cas d'un arriéré),
+    // changer la date d'encaissement ne doit plus les remplacer par le mois
+    // précédant la date.
+    let moisChoisisManuellement = false;
     formModal({
       title: row ? 'Modifier le règlement' : 'Nouveau paiement de loyer',
       size: 'lg',
@@ -116,7 +120,8 @@ export async function render() {
         ? { ...row, _bien: row.property_code, _locataire: row.tenant_nom, mois_payes_txt: monthListText(row.mois_payes, row.mois_concerne, row.annee_concernee).replace(/ \d{4}/g, ''), mois_dus_txt: row.mois_dus ? monthListText(row.mois_dus).replace(/ \d{4}/g, '') : '' }
         : { date: fmt.today(), annee_concernee: anneeEchu, mois_concerne: moisEchu, mois_payes_txt: moisEchu, nombre_mois_payes: 1, nombre_mois_dus: 0 },
       onChange: (v, changed, set) => {
-        if (!row && changed === 'date' && v.date) {
+        if (changed === 'mois_payes_txt' || changed === 'annee_concernee') moisChoisisManuellement = true;
+        if (!row && !moisChoisisManuellement && changed === 'date' && v.date) {
           const period = previousRentPeriod(v.date);
           set('mois_payes_txt', period.mois);
           set('mois_concerne', period.mois);

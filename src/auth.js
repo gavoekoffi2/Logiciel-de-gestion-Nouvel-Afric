@@ -16,7 +16,7 @@ const express = require('express');
 const {
   db, hashPassword, verifyPassword, computeSubscription, addDaysYMD, TRIAL_DAYS,
 } = require('./db');
-const { isNoSubscriptionCompanyName, noSubscriptionValueForCompany } = require('./companyPolicy');
+const { isNoSubscriptionCompanyName } = require('./companyPolicy');
 
 const router = express.Router();
 
@@ -34,7 +34,10 @@ async function companyState(companyId) {
   const c = await db.prepare('SELECT * FROM companies WHERE id = ?').get(companyId);
   if (!c) return null;
   const sub = computeSubscription(c);
-  const noSubscription = isNoSubscriptionCompanyName(c.nom);
+  // Compte interne sans abonnement : le nom seul ne suffit pas, l'acces doit
+  // aussi avoir ete accorde (illimite). Sinon l'ecran d'abonnement serait masque
+  // a une agence dont l'essai expire.
+  const noSubscription = isNoSubscriptionCompanyName(c.nom) && !!c.illimite;
   return {
     id: c.id, nom: c.nom, telephone: c.telephone, email: c.email,
     adresse: c.adresse, devise: c.devise, logo: c.logo, plan: c.plan,
@@ -56,15 +59,27 @@ async function companyState(companyId) {
 // ---------------------------------------------------------------------------
 // Middlewares
 // ---------------------------------------------------------------------------
-function requireAuth(req, res, next) {
-  if (req.session && req.session.userId) {
-    req.userId = req.session.userId;
-    req.userRole = req.session.role;
-    req.companyId = req.session.companyId || null;
-    req.userNom = req.session.userNom || null;
+// La session est un cookie signe valable 12 h : on relit l'utilisateur a chaque
+// requete, sinon un compte desactive ou supprime par l'administrateur (depart
+// d'un employe) garderait l'acces jusqu'a expiration du cookie, et un
+// changement de role ne prendrait effet qu'a la reconnexion.
+async function requireAuth(req, res, next) {
+  if (!req.session || !req.session.userId) return res.status(401).json({ error: 'Non authentifié' });
+  try {
+    const user = await db.prepare('SELECT id, role, company_id, nom, email, actif FROM users WHERE id = ?').get(req.session.userId);
+    if (!user || !user.actif) {
+      req.session = null;
+      return res.status(401).json({ error: 'Non authentifié' });
+    }
+    req.userId = user.id;
+    req.userRole = user.role;
+    req.companyId = user.company_id || null;
+    req.userNom = user.nom || user.email || req.session.userNom || null;
     return next();
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Erreur serveur' });
   }
-  return res.status(401).json({ error: 'Non authentifié' });
 }
 
 function requireSuperadmin(req, res, next) {
@@ -122,13 +137,14 @@ router.post('/register', async (req, res) => {
     const exists = await db.prepare('SELECT 1 FROM users WHERE email = ?').get(email);
     if (exists) return res.status(400).json({ error: 'Cette adresse e-mail est déjà utilisée.' });
 
-    const illimite = noSubscriptionValueForCompany(entreprise);
-    const statut = illimite ? 'actif' : 'essai';
-    const essaiFin = illimite ? null : addDaysYMD(TRIAL_DAYS);
+    // L'inscription publique demarre TOUJOURS par l'essai gratuit, quel que soit
+    // le nom saisi : l'acces illimite ne s'obtient pas en tapant « Nouvel Afric »
+    // dans le formulaire. Il est accorde par le super-admin (ou le script
+    // scripts/ensure-nouvel-afrik-account.js).
     const companyId = (await db.prepare(
       `INSERT INTO companies (nom, telephone, email, devise, plan, statut, essai_fin, illimite)
-       VALUES (?,?,?, 'FCFA', 'annuel', ?, ?, ?)`
-    ).run(entreprise, telephone, email, statut, essaiFin, illimite)).lastInsertRowid;
+       VALUES (?,?,?, 'FCFA', 'annuel', 'essai', ?, 0)`
+    ).run(entreprise, telephone, email, addDaysYMD(TRIAL_DAYS))).lastInsertRowid;
 
     const userId = (await db.prepare(
       "INSERT INTO users (username, email, password, nom, role, company_id) VALUES (?, ?, ?, ?, 'admin', ?)"
@@ -184,7 +200,7 @@ router.get('/me', async (req, res) => {
     return res.status(401).json({ error: 'Non authentifié' });
   }
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
-  if (!user) return res.status(401).json({ error: 'Non authentifié' });
+  if (!user || !user.actif) return res.status(401).json({ error: 'Non authentifié' });
   const company = user.role === 'superadmin' ? null : await companyState(user.company_id);
   res.json({ user: publicUser(user), company });
 });

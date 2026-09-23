@@ -64,9 +64,13 @@ test('the property file and the dashboard open on the month being collected', ()
 });
 
 test('monthly screens show previous arrears separately instead of adding them up', () => {
-  assert.match(house, /Arriérés antérieurs/);
-  assert.match(recovery, /Arriérés antérieurs/);
-  assert.match(recovery, /Encaissé ce mois/);
+  // Arrieres encore dus : montres a part, hors des totaux du mois.
+  assert.match(house, /Arriérés encore dus/);
+  assert.match(recovery, /Arriérés encore dus/);
+  // Arrieres regles pendant le mois : ajoutes au total encaisse du mois.
+  assert.match(recovery, /Arriérés encaissés/);
+  assert.match(recovery, /TOTAL ENCAISSÉ du mois/);
+  assert.match(dashboard, /Total encaissé \(loyers \+ arriérés\)/);
   assert.match(recovery, /Compteur mensuel/);
   // Le total d'une maison ne doit plus etre presente comme un cumul.
   assert.match(recovery, /TOTAUX DU MOIS/);

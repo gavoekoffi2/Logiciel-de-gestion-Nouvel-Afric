@@ -38,7 +38,8 @@ async function render() {
           À utiliser si vous perdez vos données ou si votre entreprise change d’hébergement. La restauration agit seulement sur votre entreprise connectée.
         </p>
         <div class="alert alert-error" style="margin-bottom:14px">
-          Attention : en mode « remplacer », les données actuelles de votre entreprise sont effacées puis remplacées par le fichier. Les autres entreprises ne sont jamais touchées.
+          Attention : en mode « remplacer », les données actuelles de votre entreprise sont remplacées par celles du fichier. Les autres entreprises ne sont jamais touchées.
+          La restauration se fait d’un seul bloc : si elle échoue, rien n’est modifié. Par prudence, téléchargez d’abord une sauvegarde de vos données actuelles.
         </div>
         <form id="restoreForm" class="form-grid">
           <div class="field col-2"><label>Fichier de sauvegarde entreprise (.json)</label><input type="file" name="file" accept="application/json,.json" /></div>

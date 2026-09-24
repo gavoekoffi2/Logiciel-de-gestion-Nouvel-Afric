@@ -2175,12 +2175,37 @@ dataRouter.get('/export', requireRole('admin'), wrap(async (req, res) => {
   res.send(JSON.stringify(data, null, 2));
 }));
 
-dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
-  const cid = req.companyId;
-  const body = req.body || {};
-  // On accepte soit l'enveloppe complete { donnees: {...} }, soit directement les
-  // listes { owners, tenants, ... }.
-  const d = (body && body.donnees) || body;
+// Premier identifiant libre d'une table : au-dela du plus grand id present ET
+// du compteur AUTOINCREMENT, pour ne jamais reattribuer l'id d'une ligne
+// supprimee.
+async function nextFreeId(table) {
+  const row = await db.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`).get();
+  let max = Number(row && row.m) || 0;
+  try {
+    const seq = await db.prepare('SELECT seq FROM sqlite_sequence WHERE name = ?').get(table);
+    if (seq && Number(seq.seq) > max) max = Number(seq.seq);
+  } catch (_) { /* table sqlite_sequence absente : MAX(id) suffit */ }
+  return max + 1;
+}
+
+// Code unique pour une ligne restauree. Les codes sont uniques au niveau
+// global ; en mode « remplacer », ceux de l'entreprise vont etre effaces dans la
+// meme transaction, ils sont donc reutilisables (le code d'origine est garde).
+async function importCode(table, prefix, desired, used, companyId, replacing) {
+  const taken = async (code) => used.has(code) || !!(await db.prepare(
+    `SELECT 1 FROM ${table} WHERE code = ? AND (? = 0 OR company_id <> ?)`
+  ).get(code, replacing ? 1 : 0, companyId));
+  let code = clean(desired) || `${prefix}${dateCode()}A${rand()}`;
+  while (await taken(code)) code = `${clean(desired) || prefix}-${rand()}`;
+  used.add(code);
+  return code;
+}
+
+// Prepare TOUTES les ecritures d'une restauration, sans rien modifier en base.
+// Les identifiants des nouvelles lignes sont attribues a l'avance : les liens
+// entre tables (bien -> proprietaire, reglement -> bail, …) sont ainsi connus
+// sans avoir a inserer ligne par ligne.
+async function buildCompanyImport(cid, body, d, mode) {
   const list = (k) => (Array.isArray(d[k]) ? d[k] : []);
   const owners = list('owners');
   const tenants = list('tenants');
@@ -2190,34 +2215,39 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const payments = list('payments');
   const repairs = list('repairs');
   const audit_log = list('audit_log');
+  const replacing = mode === 'remplacer';
 
-  if (![owners, tenants, properties, subscriptions, payouts, payments, repairs, audit_log].some((a) => a.length)) {
-    return res.status(400).json({ error: 'Fichier de sauvegarde vide ou invalide.' });
-  }
+  const statements = [];
+  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payouts: 0, payments: 0, repairs: 0, audit_log: 0 };
 
   // Le profil de l'entreprise est sauvegarde avec les donnees. A la restauration,
   // on le remet a jour par defaut pour que l'entreprise retrouve sa devise et ses
   // coordonnees apres migration. Le compte de connexion reste celui de la session.
   if (body.entreprise && body.restaurerProfil !== false) {
-    await db.prepare('UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=? WHERE id=?').run(
-      clean(body.entreprise.nom) || 'Mon entreprise',
-      clean(body.entreprise.telephone),
-      clean(body.entreprise.email),
-      clean(body.entreprise.adresse),
-      clean(body.entreprise.devise) || 'FCFA',
-      cid
-    );
+    statements.push({
+      sql: 'UPDATE companies SET nom=?, telephone=?, email=?, adresse=?, devise=? WHERE id=?',
+      args: [
+        clean(body.entreprise.nom) || 'Mon entreprise',
+        clean(body.entreprise.telephone),
+        clean(body.entreprise.email),
+        clean(body.entreprise.adresse),
+        clean(body.entreprise.devise) || 'FCFA',
+        cid,
+      ],
+    });
   }
 
-  // 'remplacer' : efface d'abord les donnees actuelles de CETTE entreprise.
-  // 'fusionner' (defaut) : ajoute aux donnees existantes.
-  const mode = clean(body.mode) === 'remplacer' ? 'remplacer' : 'fusionner';
-  if (mode === 'remplacer') {
+  // 'remplacer' : efface d'abord les donnees actuelles de CETTE entreprise —
+  // dans la meme transaction que les insertions qui suivent.
+  if (replacing) {
     for (const t of [...DATA_TABLES].reverse()) {
-      await db.prepare(`DELETE FROM ${t} WHERE company_id = ?`).run(cid);
+      statements.push({ sql: `DELETE FROM ${t} WHERE company_id = ?`, args: [cid] });
     }
   }
 
+  const ids = {};
+  for (const t of DATA_TABLES) ids[t] = await nextFreeId(t);
+  const newId = (t) => ids[t]++;
   // Les identifiants auto-incrementes different d'une base a l'autre : on remappe
   // les anciens id vers les nouveaux pour preserver les liens entre les tables.
   const ownerMap = new Map();
@@ -2225,131 +2255,190 @@ dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
   const propertyMap = new Map();
   const subscriptionMap = new Map();
   const payoutMap = new Map();
-  const counts = { owners: 0, tenants: 0, properties: 0, subscriptions: 0, payouts: 0, payments: 0, repairs: 0, audit_log: 0 };
+  const usedCodes = { properties: new Set(), subscriptions: new Set(), payouts: new Set(), payments: new Set() };
 
   for (const o of owners) {
-    const id = (await db.prepare(
-      'INSERT INTO owners (company_id, nom_prenoms, contact, email, adresse, type_logement, pieces_logement) VALUES (?,?,?,?,?,?,?)'
-    ).run(cid, clean(o.nom_prenoms) || 'Sans nom', clean(o.contact), clean(o.email), clean(o.adresse),
-      clean(o.type_logement) || null, clean(o.pieces_logement) || null)).lastInsertRowid;
+    const id = newId('owners');
+    statements.push({
+      sql: 'INSERT INTO owners (id, company_id, nom_prenoms, contact, email, adresse, type_logement, pieces_logement) VALUES (?,?,?,?,?,?,?,?)',
+      args: [id, cid, clean(o.nom_prenoms) || 'Sans nom', clean(o.contact), clean(o.email), clean(o.adresse),
+        clean(o.type_logement) || null, clean(o.pieces_logement) || null],
+    });
     if (o.id != null) ownerMap.set(o.id, id);
     counts.owners++;
   }
 
   for (const t of tenants) {
-    const id = (await db.prepare(
-      'INSERT INTO tenants (company_id, nom_prenoms, contact, email, adresse, caution, autre_frais, montant_autre_frais) VALUES (?,?,?,?,?,?,?,?)'
-    ).run(
-      cid, clean(t.nom_prenoms) || 'Sans nom', clean(t.contact), clean(t.email), clean(t.adresse),
-      toInt(t.caution), clean(t.autre_frais), toInt(t.montant_autre_frais)
-    )).lastInsertRowid;
+    const id = newId('tenants');
+    statements.push({
+      sql: 'INSERT INTO tenants (id, company_id, nom_prenoms, contact, email, adresse, caution, autre_frais, montant_autre_frais) VALUES (?,?,?,?,?,?,?,?,?)',
+      args: [id, cid, clean(t.nom_prenoms) || 'Sans nom', clean(t.contact), clean(t.email), clean(t.adresse),
+        toInt(t.caution), clean(t.autre_frais), toInt(t.montant_autre_frais)],
+    });
     if (t.id != null) tenantMap.set(t.id, id);
     counts.tenants++;
   }
 
   for (const p of properties) {
-    const code = await uniqueCode('properties', 'MX', p.code);
-    const id = (await db.prepare(
-      `INSERT INTO properties
-       (company_id, code, owner_id, type_construction, nombre_piece, designation, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      cid, code, ownerMap.get(p.owner_id) || null,
-      clean(p.type_construction), p.nombre_piece != null ? toInt(p.nombre_piece) : null, clean(p.designation) || null,
-      toInt(p.cout_loyer), clean(p.ville), clean(p.commune), clean(p.quartier),
-      clean(p.observation), toNum(p.part_commission), p.nombre_porte != null ? toInt(p.nombre_porte) : null
-    )).lastInsertRowid;
+    const id = newId('properties');
+    const code = await importCode('properties', 'MX', p.code, usedCodes.properties, cid, replacing);
+    statements.push({
+      sql: `INSERT INTO properties
+       (id, company_id, code, owner_id, type_construction, nombre_piece, designation, cout_loyer, ville, commune, quartier, observation, part_commission, nombre_porte)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        id, cid, code, ownerMap.get(p.owner_id) || null,
+        clean(p.type_construction), p.nombre_piece != null ? toInt(p.nombre_piece) : null, clean(p.designation) || null,
+        toInt(p.cout_loyer), clean(p.ville), clean(p.commune), clean(p.quartier),
+        clean(p.observation), toNum(p.part_commission), p.nombre_porte != null ? toInt(p.nombre_porte) : null,
+      ],
+    });
     if (p.id != null) propertyMap.set(p.id, id);
     counts.properties++;
   }
 
   for (const s of subscriptions) {
-    const code = await uniqueCode('subscriptions', 'S', s.code);
+    const id = newId('subscriptions');
+    const code = await importCode('subscriptions', 'S', s.code, usedCodes.subscriptions, cid, replacing);
     const importedStatus = ['Active', 'Desactive'].includes(clean(s.statut)) ? clean(s.statut) : 'Active';
     const importedEndDate = importedStatus === 'Desactive' && isValidYMD(s.date_fin) ? clean(s.date_fin) : null;
-    const id = (await db.prepare(
-      `INSERT INTO subscriptions
-       (company_id, code, property_id, tenant_id, date_souscription, montant_loyer,
+    statements.push({
+      sql: `INSERT INTO subscriptions
+       (id, company_id, code, property_id, tenant_id, date_souscription, montant_loyer,
         nombre_mois_caution, montant_caution, nombre_mois_avance, montant_avance,
         nombre_mois_garantie, montant_garantie, autre_frais, montant_autre_frais,
         date_entree, date_debut_paiement, date_fin, statut)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      cid, code, propertyMap.get(s.property_id) || null, tenantMap.get(s.tenant_id) || null,
-      clean(s.date_souscription) || null, toInt(s.montant_loyer),
-      toInt(s.nombre_mois_caution), toInt(s.montant_caution),
-      toInt(s.nombre_mois_avance), toInt(s.montant_avance),
-      toInt(s.nombre_mois_garantie), toInt(s.montant_garantie),
-      clean(s.autre_frais), toInt(s.montant_autre_frais),
-      clean(s.date_entree) || null, clean(s.date_debut_paiement) || null,
-      importedEndDate,
-      importedStatus
-    )).lastInsertRowid;
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        id, cid, code, propertyMap.get(s.property_id) || null, tenantMap.get(s.tenant_id) || null,
+        clean(s.date_souscription) || null, toInt(s.montant_loyer),
+        toInt(s.nombre_mois_caution), toInt(s.montant_caution),
+        toInt(s.nombre_mois_avance), toInt(s.montant_avance),
+        toInt(s.nombre_mois_garantie), toInt(s.montant_garantie),
+        clean(s.autre_frais), toInt(s.montant_autre_frais),
+        clean(s.date_entree) || null, clean(s.date_debut_paiement) || null,
+        importedEndDate,
+        importedStatus,
+      ],
+    });
     if (s.id != null) subscriptionMap.set(s.id, id);
     counts.subscriptions++;
   }
 
   for (const v of payouts) {
-    const code = await uniqueCode('payouts', 'V', v.code);
-    const id = (await db.prepare(
-      `INSERT INTO payouts
-       (company_id, code, owner_id, date, periode_debut, periode_fin,
+    const id = newId('payouts');
+    const code = await importCode('payouts', 'V', v.code, usedCodes.payouts, cid, replacing);
+    statements.push({
+      sql: `INSERT INTO payouts
+       (id, company_id, code, owner_id, date, periode_debut, periode_fin,
         nombre_paiements, montant_loyers, montant_commission, montant_net, note)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      cid, code, ownerMap.get(v.owner_id) || null,
-      clean(v.date) || null, clean(v.periode_debut) || null, clean(v.periode_fin) || null,
-      toInt(v.nombre_paiements), toInt(v.montant_loyers), toInt(v.montant_commission), toInt(v.montant_net),
-      clean(v.note) || null
-    )).lastInsertRowid;
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        id, cid, code, ownerMap.get(v.owner_id) || null,
+        clean(v.date) || null, clean(v.periode_debut) || null, clean(v.periode_fin) || null,
+        toInt(v.nombre_paiements), toInt(v.montant_loyers), toInt(v.montant_commission), toInt(v.montant_net),
+        clean(v.note) || null,
+      ],
+    });
     if (v.id != null) payoutMap.set(v.id, id);
     counts.payouts++;
   }
 
   for (const p of payments) {
-    const code = await uniqueCode('payments', 'R', p.code);
-    await db.prepare(
-      `INSERT INTO payments
-       (company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer,
+    const id = newId('payments');
+    const code = await importCode('payments', 'R', p.code, usedCodes.payments, cid, replacing);
+    statements.push({
+      sql: `INSERT INTO payments
+       (id, company_id, code, subscription_id, property_id, tenant_id, date, montant_a_payer, montant_paye, reste_a_payer,
         mois_concerne, annee_concernee, nombre_mois_payes, mois_payes, nombre_mois_dus, mois_dus, statut, payout_id, numero_recu)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(
-      cid, code, subscriptionMap.get(p.subscription_id) || null,
-      propertyMap.get(p.property_id) || null, tenantMap.get(p.tenant_id) || null,
-      clean(p.date) || null, toInt(p.montant_a_payer), toInt(p.montant_paye), toInt(p.reste_a_payer),
-      clean(p.mois_concerne), p.annee_concernee != null ? toInt(p.annee_concernee) : null,
-      toInt(p.nombre_mois_payes) || 1, clean(p.mois_payes), toInt(p.nombre_mois_dus), clean(p.mois_dus),
-      clean(p.statut) || 'Soldé', payoutMap.get(p.payout_id) || null, clean(p.numero_recu) || null
-    );
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args: [
+        id, cid, code, subscriptionMap.get(p.subscription_id) || null,
+        propertyMap.get(p.property_id) || null, tenantMap.get(p.tenant_id) || null,
+        clean(p.date) || null, toInt(p.montant_a_payer), toInt(p.montant_paye), toInt(p.reste_a_payer),
+        clean(p.mois_concerne), p.annee_concernee != null ? toInt(p.annee_concernee) : null,
+        toInt(p.nombre_mois_payes) || 1, clean(p.mois_payes), toInt(p.nombre_mois_dus), clean(p.mois_dus),
+        clean(p.statut) || 'Soldé', payoutMap.get(p.payout_id) || null, clean(p.numero_recu) || null,
+      ],
+    });
     counts.payments++;
   }
 
   for (const v of repairs) {
     const pid = propertyMap.get(v.property_id);
     if (!pid) continue; // une reparation sans bien rattachable est ignoree
-    await db.prepare(
-      'INSERT INTO repairs (company_id, property_id, mois, annee, montant, description) VALUES (?,?,?,?,?,?)'
-    ).run(cid, pid, clean(v.mois) || null, v.annee != null ? toInt(v.annee) : null, toInt(v.montant), clean(v.description) || null);
+    statements.push({
+      sql: 'INSERT INTO repairs (id, company_id, property_id, mois, annee, montant, description) VALUES (?,?,?,?,?,?,?)',
+      args: [newId('repairs'), cid, pid, clean(v.mois) || null, v.annee != null ? toInt(v.annee) : null, toInt(v.montant), clean(v.description) || null],
+    });
     counts.repairs++;
   }
 
   for (const a of audit_log) {
-    await db.prepare(
-      'INSERT INTO audit_log (company_id, user_id, user_nom, action, entity, label, created_at) VALUES (?,?,?,?,?,?,?)'
-    ).run(
-      cid,
-      null,
-      clean(a.user_nom) || null,
-      clean(a.action) || 'Restauration',
-      clean(a.entity) || null,
-      clean(a.label) || null,
-      clean(a.created_at) || new Date().toISOString()
-    );
+    statements.push({
+      sql: 'INSERT INTO audit_log (id, company_id, user_id, user_nom, action, entity, label, created_at) VALUES (?,?,?,?,?,?,?,?)',
+      args: [
+        newId('audit_log'), cid, null,
+        clean(a.user_nom) || null,
+        clean(a.action) || 'Restauration',
+        clean(a.entity) || null,
+        clean(a.label) || null,
+        clean(a.created_at) || new Date().toISOString(),
+      ],
+    });
     counts.audit_log++;
   }
 
+  return { statements, counts, ids };
+}
+
+// RESTAURATION ATOMIQUE. Toutes les ecritures (effacement en mode
+// « remplacer », puis insertions) partent dans UNE seule transaction : si quoi
+// que ce soit echoue — fichier abime, coupure reseau, serveur qui redemarre —
+// la base revient exactement a son etat d'avant. On ne peut plus se retrouver
+// avec des donnees effacees et une sauvegarde a moitie chargee.
+dataRouter.post('/import', requireRole('admin'), wrap(async (req, res) => {
+  const cid = req.companyId;
+  const body = req.body || {};
+  // On accepte soit l'enveloppe complete { donnees: {...} }, soit directement les
+  // listes { owners, tenants, ... }.
+  const d = (body && body.donnees) || body;
+  if (!d || typeof d !== 'object' || !DATA_TABLES.some((k) => Array.isArray(d[k]) && d[k].length)) {
+    return res.status(400).json({ error: 'Fichier de sauvegarde vide ou invalide.' });
+  }
+  const mode = clean(body.mode) === 'remplacer' ? 'remplacer' : 'fusionner';
+
+  let prepared;
+  let lastError = null;
+  // Deux tentatives : si un autre utilisateur cree une ligne entre la
+  // preparation et l'ecriture, l'identifiant reserve peut etre pris. La
+  // transaction est alors annulee en bloc, et on prepare a nouveau.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    prepared = await buildCompanyImport(cid, body, d, mode);
+    const journal = {
+      sql: 'INSERT INTO audit_log (id, company_id, user_id, user_nom, action, entity, label) VALUES (?,?,?,?,?,?,?)',
+      args: [prepared.ids.audit_log, cid, req.userId || null, req.userNom || null, 'Restauration', 'Sauvegarde',
+        `Mode ${mode} — ${prepared.counts.payments} règlement(s), ${prepared.counts.subscriptions} bail(aux)`],
+    };
+    try {
+      await db.batch([...prepared.statements, journal]);
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      if (!/unique|constraint/i.test(String(err && err.message))) break;
+    }
+  }
+  if (lastError) {
+    console.error('Restauration annulee :', lastError);
+    return res.status(400).json({
+      error: 'La restauration a échoué et a été entièrement annulée : aucune donnée n’a été modifiée. '
+        + `Vérifiez le fichier de sauvegarde. (Détail : ${lastError.message || lastError})`,
+    });
+  }
+
   await migrateInactiveSubscriptionDates(cid);
-  res.json({ ok: true, mode, importe: counts });
+  res.json({ ok: true, mode, importe: prepared.counts });
 }));
 
 module.exports = { router, settingsRouter, subscriptionRouter, dataRouter };

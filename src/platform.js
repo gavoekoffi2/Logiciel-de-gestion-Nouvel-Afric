@@ -224,12 +224,16 @@ router.post('/companies/:id/users', wrap(async (req, res) => {
 }));
 
 // Supprimer une entreprise (et toutes ses donnees).
+// Tout part dans une seule transaction : une coupure en cours de route ne peut
+// plus laisser une entreprise a moitie supprimee. Reversements, reparations et
+// journal sont effaces eux aussi (ils restaient orphelins auparavant).
 router.delete('/companies/:id', wrap(async (req, res) => {
   const id = toInt(req.params.id);
-  for (const t of ['payments', 'subscriptions', 'properties', 'tenants', 'owners', 'users']) {
-    await db.prepare(`DELETE FROM ${t} WHERE company_id = ?`).run(id);
-  }
-  await db.prepare('DELETE FROM companies WHERE id = ?').run(id);
+  const tables = ['audit_log', 'repairs', 'payments', 'payouts', 'subscriptions', 'properties', 'tenants', 'owners', 'users'];
+  await db.batch([
+    ...tables.map((t) => ({ sql: `DELETE FROM ${t} WHERE company_id = ?`, args: [id] })),
+    { sql: 'DELETE FROM companies WHERE id = ?', args: [id] },
+  ]);
   res.json({ ok: true });
 }));
 
@@ -287,18 +291,19 @@ async function tableRows(table) {
   return db.prepare(`SELECT * FROM ${ident(table)} ORDER BY id`).all();
 }
 
-async function insertRows(table, rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return 0;
-  const columns = await columnsFor(table);
-  let count = 0;
-  for (const row of rows) {
+// Prepare (sans les executer) les insertions d'une table de la sauvegarde.
+function insertStatements(table, columns, rows) {
+  const statements = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || typeof row !== 'object') continue;
     const names = columns.filter((c) => Object.prototype.hasOwnProperty.call(row, c));
     if (names.length === 0) continue;
-    const sql = `INSERT INTO ${ident(table)} (${names.map((n) => `"${n}"`).join(',')}) VALUES (${names.map(() => '?').join(',')})`;
-    await db.prepare(sql).run(...names.map((n) => row[n]));
-    count += 1;
+    statements.push({
+      sql: `INSERT INTO ${ident(table)} (${names.map((n) => `"${n}"`).join(',')}) VALUES (${names.map(() => '?').join(',')})`,
+      args: names.map((n) => row[n]),
+    });
   }
-  return count;
+  return statements;
 }
 
 function backupCounts(data) {
@@ -337,28 +342,43 @@ router.post('/backup/import', wrap(async (req, res) => {
 
   const currentSuperadmin = await db.prepare("SELECT * FROM users WHERE id = ? AND role = 'superadmin'").get(req.userId);
 
-  for (const t of FULL_BACKUP_DELETE_ORDER) {
-    await db.prepare(`DELETE FROM ${ident(t)}`).run();
-  }
-
+  // RESTAURATION ATOMIQUE. Cette operation efface TOUTE la plateforme (toutes
+  // les agences) avant de recharger le fichier. Effacement et insertions partent
+  // donc dans UNE seule transaction : au moindre echec, rien n'est modifie.
+  const statements = FULL_BACKUP_DELETE_ORDER.map((t) => ({ sql: `DELETE FROM ${ident(t)}`, args: [] }));
   const imported = {};
   for (const t of FULL_BACKUP_TABLES) {
-    imported[t] = await insertRows(t, Array.isArray(tables[t]) ? tables[t] : []);
+    const rows = insertStatements(t, await columnsFor(t), tables[t]);
+    statements.push(...rows);
+    imported[t] = rows.length;
   }
 
-  const hasSuperadmin = await db.prepare("SELECT 1 FROM users WHERE role = 'superadmin' AND actif = 1 LIMIT 1").get();
-  if (!hasSuperadmin && currentSuperadmin) {
-    await insertRows('users', [{ ...currentSuperadmin, actif: 1 }]);
+  // Ne jamais se retrouver sans super-administrateur actif…
+  const fileUsers = Array.isArray(tables.users) ? tables.users : [];
+  const fileHasSuperadmin = fileUsers.some((u) => u && u.role === 'superadmin'
+    && (u.actif === undefined || u.actif === null || Number(u.actif) === 1));
+  if (!fileHasSuperadmin && currentSuperadmin) {
+    // (on retire d'abord une eventuelle ligne du fichier portant le meme id ou
+    // le meme e-mail, pour que l'insertion ne puisse pas echouer)
+    statements.push({ sql: 'DELETE FROM users WHERE id = ? OR email = ?', args: [currentSuperadmin.id, currentSuperadmin.email] });
+    statements.push(...insertStatements('users', await columnsFor('users'), [{ ...currentSuperadmin, actif: 1 }]));
     imported.users += 1;
   }
+  // …ni sans parametres de plateforme.
+  statements.push({
+    sql: `INSERT OR IGNORE INTO platform (id, nom, contact_telephone, contact_whatsapp, contact_email, prix_annuel, devise, message)
+          VALUES (1, 'MaGérance', '', '', '', 50000, 'FCFA', '')`,
+    args: [],
+  });
 
-  const hasPlatform = await db.prepare('SELECT 1 FROM platform WHERE id = 1').get();
-  if (!hasPlatform) {
-    await db.prepare(
-      `INSERT INTO platform (id, nom, contact_telephone, contact_whatsapp, contact_email, prix_annuel, devise, message)
-       VALUES (1, 'MaGérance', '', '', '', 50000, 'FCFA', '')`
-    ).run();
-    imported.platform += 1;
+  try {
+    await db.batch(statements);
+  } catch (err) {
+    console.error('Restauration complete annulee :', err);
+    return res.status(400).json({
+      error: 'La restauration a échoué et a été entièrement annulée : aucune donnée n’a été modifiée. '
+        + `Vérifiez le fichier de sauvegarde. (Détail : ${err.message || err})`,
+    });
   }
 
   res.json({ ok: true, message: 'Restauration complète terminée.', imported });

@@ -104,10 +104,18 @@ async function setup(baseUrl, { caution = 0, avance = 0 } = {}) {
   return { cookie, property: property.data, subscription: batch.data.subscriptions[0] };
 }
 
-async function encaisser(baseUrl, cookie, subscriptionId, period, montant) {
+// Date d'encaissement realiste d'un loyer paye a l'heure : a terme echu, le
+// loyer d'un mois s'encaisse au debut du mois suivant.
+function dateAlHeure(period) {
+  const next = buildPeriod(Math.floor((period.index + 1) / 12), ((period.index + 1) % 12) + 1);
+  return ymd(next);
+}
+
+async function encaisser(baseUrl, cookie, subscriptionId, period, montant, date = dateAlHeure(period)) {
   const paiement = await request(baseUrl, 'POST', '/api/payments', {
     subscription_id: subscriptionId,
     montant_paye: montant,
+    date,
     mois_payes: JSON.stringify([{ mois: period.mois, annee: period.annee }]),
     mois_concerne: period.mois,
     annee_concernee: period.annee,
@@ -463,5 +471,153 @@ test('un locataire à jour n’affiche aucun mois dû', async () => {
 
     const fiche = await request(baseUrl, 'GET', `/api/tenants/${liste.data[0].id}/details`, null, cookie);
     assert.deepEqual(fiche.data.arrieres, []);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Quatrieme signalement : « quand quelqu'un paie ses arrieres et qu'on
+// enregistre, le montant de l'arriere ne s'ajoute pas au montant du mois en
+// cours. Ca nous fausse les calculs du mois. »
+//
+// Un arriere regle pendant le mois de recouvrement est de l'argent recolte ce
+// mois-ci : il doit s'ajouter au total encaisse du mois — sans pour autant
+// devenir un loyer du mois (ni le du, ni l'ecart du mois ne bougent).
+// ---------------------------------------------------------------------------
+
+// Date d'un encaissement fait pendant le recouvrement en cours (mois civil
+// actuel).
+const encaisseCeMois = () => dateAlHeure(periodBefore(0));
+
+test('un arriéré payé ce mois-ci s’ajoute au total encaissé du mois de recouvrement', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, subscription } = await setup(baseUrl);
+    const moisAffiche = periodBefore(0);
+    const arriere = periodBefore(2);
+
+    // Loyer du mois payé à l'heure, puis le locataire vient régler un arriéré.
+    await encaisser(baseUrl, cookie, subscription.id, moisAffiche, LOYER);
+    await encaisser(baseUrl, cookie, subscription.id, arriere, LOYER, encaisseCeMois());
+
+    const rapport = await recouvrement(baseUrl, cookie, moisAffiche);
+    assert.equal(rapport.res.status, 200, JSON.stringify(rapport.data));
+    const ligne = ligneDe(rapport);
+    // Le loyer du mois reste le loyer du mois…
+    assert.equal(ligne.montant_du, LOYER);
+    assert.equal(ligne.montant_paye, LOYER);
+    assert.equal(ligne.ecart, 0);
+    // …mais l'arriéré réglé ce mois-ci s'ajoute bien au total encaissé.
+    assert.equal(ligne.arrieres_encaisses, LOYER);
+    assert.deepEqual(ligne.arrieres_encaisses_liste, [`${arriere.mois} ${arriere.annee}`]);
+    assert.equal(ligne.total_encaisse, 2 * LOYER);
+    // L'arriéré réglé sort de la colonne des arriérés encore dus.
+    assert.equal(ligne.arrieres, LOYER, 'il ne reste que le mois intermédiaire impayé');
+
+    const maison = maisonDe(rapport);
+    assert.equal(maison.total_paye, LOYER);
+    assert.equal(maison.total_arrieres_encaisses, LOYER);
+    assert.equal(maison.total_encaisse, 2 * LOYER);
+    // Commission nulle sur ce bien : tout ce qui a été récolté est à reverser.
+    assert.equal(maison.solde, 2 * LOYER);
+
+    const recap = rapport.data.recap;
+    assert.equal(recap.total_du, LOYER, 'le dû du mois ne bouge pas');
+    assert.equal(recap.ecart, 0, 'l’écart du mois ne bouge pas');
+    assert.equal(recap.total_paye, LOYER);
+    assert.equal(recap.total_arrieres_encaisses, LOYER);
+    assert.equal(recap.total_encaisse, 2 * LOYER);
+    assert.equal(recap.solde, 2 * LOYER);
+  });
+});
+
+test('l’arriéré payé ce mois-ci compte aussi au tableau de bord, dans les règlements et sur la fiche du bien', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, property, subscription } = await setup(baseUrl);
+    const moisAffiche = periodBefore(0);
+    const arriere = periodBefore(1);
+
+    await encaisser(baseUrl, cookie, subscription.id, moisAffiche, 100000);
+    await encaisser(baseUrl, cookie, subscription.id, arriere, 50000, encaisseCeMois());
+
+    const dashboard = await request(baseUrl, 'GET', '/api/dashboard', null, cookie);
+    assert.equal(dashboard.data.total_loyer, 150000, 'total encaissé = loyer du mois + arriéré');
+    assert.equal(dashboard.data.total_encaisse, 150000);
+    assert.equal(dashboard.data.arrieres_encaisses, 50000);
+    // La jauge « attendu / encaissé » reste calée sur les loyers du mois.
+    assert.equal(dashboard.data.loyer_encaisse_mois, 100000);
+    assert.equal(dashboard.data.loyer_attendu, LOYER);
+    assert.equal(dashboard.data.derniers_paiements.length, 2);
+
+    // L'écran Règlements, calé sur le mois à recouvrer, liste l'arriéré.
+    const reglements = await request(baseUrl, 'GET', '/api/payments?mode=current', null, cookie);
+    assert.equal(reglements.data.length, 2);
+    const ligneArriere = reglements.data.find((r) => r.arriere_encaisse > 0);
+    assert.ok(ligneArriere, 'le règlement de l’arriéré apparaît dans la liste du mois');
+    assert.equal(ligneArriere.montant_paye, 50000);
+    assert.deepEqual(ligneArriere.periodes_filtrees.map((m) => m.mois), [arriere.mois]);
+
+    const fiche = await request(baseUrl, 'GET', `/api/properties/${property.id}/details`, null, cookie);
+    assert.equal(fiche.data.totals.total_paye, 100000);
+    assert.equal(fiche.data.totals.total_arrieres_encaisses, 50000);
+    assert.equal(fiche.data.totals.total_encaisse, 150000);
+    const sub = fiche.data.subscriptions.find((s) => s.id === subscription.id);
+    assert.equal(sub.resume.total_paye, 100000);
+    assert.equal(sub.resume.arrieres_encaisses, 50000);
+    assert.equal(sub.resume.total_encaisse, 150000);
+    assert.equal(sub.resume.arrieres, LOYER + (LOYER - 50000), 'le premier mois et le reste de l’arriéré demeurent dus');
+  });
+});
+
+test('un arriéré payé le mois dernier ne revient pas dans le total du mois en cours', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, subscription } = await setup(baseUrl);
+    const moisAffiche = periodBefore(0);
+    const moisPasse = periodBefore(1);
+    const arriere = periodBefore(2);
+
+    // Arriéré réglé pendant le recouvrement du mois PASSÉ.
+    await encaisser(baseUrl, cookie, subscription.id, arriere, LOYER, dateAlHeure(moisPasse));
+
+    const passe = await recouvrement(baseUrl, cookie, moisPasse);
+    assert.equal(ligneDe(passe).arrieres_encaisses, LOYER, 'compté le mois où il a été encaissé');
+    assert.equal(passe.data.recap.total_encaisse, LOYER);
+
+    // Le compteur du mois suivant repart bien de zéro.
+    const courant = await recouvrement(baseUrl, cookie, moisAffiche);
+    assert.equal(ligneDe(courant).arrieres_encaisses, 0);
+    assert.equal(courant.data.recap.total_encaisse, 0);
+
+    const dashboard = await request(baseUrl, 'GET', '/api/dashboard', null, cookie);
+    assert.equal(dashboard.data.total_loyer, 0);
+  });
+});
+
+test('un règlement couvrant un arriéré et le mois en cours est ventilé sans double compte', async () => {
+  await withServer(async (baseUrl) => {
+    const { cookie, subscription } = await setup(baseUrl);
+    const moisAffiche = periodBefore(0);
+    const arriere = periodBefore(1);
+
+    const paiement = await request(baseUrl, 'POST', '/api/payments', {
+      subscription_id: subscription.id,
+      montant_paye: 2 * LOYER,
+      date: encaisseCeMois(),
+      mois_payes: JSON.stringify([
+        { mois: arriere.mois, annee: arriere.annee },
+        { mois: moisAffiche.mois, annee: moisAffiche.annee },
+      ]),
+    }, cookie);
+    assert.equal(paiement.res.status, 200, JSON.stringify(paiement.data));
+
+    const rapport = await recouvrement(baseUrl, cookie, moisAffiche);
+    const ligne = ligneDe(rapport);
+    assert.equal(ligne.montant_paye, LOYER);
+    assert.equal(ligne.arrieres_encaisses, LOYER);
+    assert.equal(ligne.total_encaisse, 2 * LOYER);
+    assert.equal(ligne.arrieres, LOYER, 'seul le mois de début du bail reste dû');
+
+    const dashboard = await request(baseUrl, 'GET', '/api/dashboard', null, cookie);
+    assert.equal(dashboard.data.total_loyer, 2 * LOYER);
+    assert.equal(dashboard.data.loyer_encaisse_mois, LOYER);
   });
 });

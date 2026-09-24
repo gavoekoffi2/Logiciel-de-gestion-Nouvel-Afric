@@ -110,14 +110,16 @@ function allocateInteger(total, count) {
   });
 }
 
-function paymentAmountsInRange(payment, range) {
+// Ventile un reglement mois par mois (montant a payer, montant paye, reste) et
+// ne conserve que les mois retenus par `keep(period, index)`.
+function paymentAmountsFor(payment, keep) {
   const periods = parsePeriods(payment && payment.mois_payes, payment && payment.mois_concerne, payment && payment.annee_concernee);
   const sourcePeriods = periods.length ? periods : [{ mois: payment && payment.mois_concerne, annee: toInt(payment && payment.annee_concernee) }];
   const allocations = {
     montant_a_payer: allocateInteger(payment && payment.montant_a_payer, sourcePeriods.length),
     montant_paye: allocateInteger(payment && payment.montant_paye, sourcePeriods.length),
   };
-  const selectedIndexes = sourcePeriods.map((period, index) => periodInRange(period, range) ? index : -1).filter((index) => index >= 0);
+  const selectedIndexes = sourcePeriods.map((period, index) => keep(period, index) ? index : -1).filter((index) => index >= 0);
   const selectedPeriods = selectedIndexes.map((index) => sourcePeriods[index]);
   if (!selectedPeriods.length) {
     return { matches: false, selectedPeriods: [], periodAmounts: [], montant_a_payer: 0, montant_paye: 0, reste_a_payer: 0 };
@@ -146,6 +148,46 @@ function paymentAmountsInRange(payment, range) {
   };
 }
 
+// Part d'un reglement imputee aux mois de loyer de la periode (quelle que soit
+// sa date d'encaissement).
+function paymentAmountsInRange(payment, range) {
+  return paymentAmountsFor(payment, (period) => periodInRange(period, range));
+}
+
+// Periode de recouvrement a laquelle appartient un encaissement, d'apres sa
+// DATE. A terme echu, l'argent recu en septembre sert au recouvrement du loyer
+// d'aout : un encaissement date du mois M appartient a la periode M-1.
+// null si la date est absente ou illisible (on ne devine jamais une date).
+function collectionPeriodIndex(dateValue) {
+  const match = String(dateValue || '').trim().match(/^(\d{4})-(\d{2})/);
+  if (!match) return null;
+  const year = toInt(match[1]);
+  const monthNumber = toInt(match[2]);
+  if (year < 1900 || monthNumber < 1 || monthNumber > 12) return null;
+  return year * 12 + monthNumber - 1 - 1;
+}
+
+// ARRIERES ENCAISSES PENDANT LA PERIODE. Part d'un reglement qui solde des mois
+// ANTERIEURS a la periode affichee, mais qui a ete encaissee pendant le
+// recouvrement de cette periode (d'apres la date d'encaissement).
+//
+// Ces montants ne sont pas des loyers du mois — ils ne touchent ni au du, ni a
+// l'ecart du mois — mais c'est bien de l'argent recolte pendant le mois :
+// l'agence doit les retrouver dans le total encaisse du mois.
+//
+// Les mois deja compris dans la periode sont exclus : ils sont comptes comme
+// loyers de la periode, les reprendre ici les compterait deux fois.
+function arrearsCollectedInRange(payment, range) {
+  const none = paymentAmountsFor(payment, () => false);
+  if (!range || range.mode === 'all' || !range.from || !range.to) return none;
+  const collected = collectionPeriodIndex(payment && payment.date);
+  if (collected === null || collected < range.from.index || collected > range.to.index) return none;
+  return paymentAmountsFor(payment, (period) => {
+    const index = periodIndex(period);
+    return index !== null && index < range.from.index;
+  });
+}
+
 function rangeLabel(range) {
   if (!range || range.mode === 'all') return 'Toutes les périodes';
   if (range.from.index === range.to.index) return `${range.from.mois} ${range.from.annee}`;
@@ -160,5 +202,7 @@ module.exports = {
   periodIndex,
   periodInRange,
   paymentAmountsInRange,
+  collectionPeriodIndex,
+  arrearsCollectedInRange,
   rangeLabel,
 };

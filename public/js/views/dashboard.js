@@ -36,6 +36,7 @@ export async function render() {
       <div class="muted" style="font-size:12.5px;margin:-6px 0 10px">Loyers encaissés et impayés : <b>période affichée uniquement</b>, le compteur repart de zéro à chaque mois. Les <b>arriérés réglés pendant la période</b> (d’après leur date d’encaissement) s’ajoutent au total encaissé. Cautions, avances et « à reverser » sont des <b>encours</b> : de l’argent détenu ou dû tant qu’il n’a pas été restitué ou reversé. Les biens supprimés ne comptent dans aucune de ces tuiles.</div>
       <div class="grid stats-grid">
         ${stat('ic-green', 'wallet', fmt.money(d.total_loyer), 'Total encaissé (loyers + arriérés)')}
+        ${stat('ic-red', 'payments', fmt.money(d.total_depenses || 0), 'Dépenses de la période')}
         ${stat('ic-green', 'collect', fmt.money(d.arrieres_encaisses || 0), 'dont arriérés encaissés')}
         ${stat('ic-blue', 'money', fmt.money(d.total_caution), 'Cautions détenues (baux actifs)')}
         ${stat('ic-amber', 'money', fmt.money(d.total_avance), 'Avances détenues (baux actifs)')}
@@ -60,6 +61,8 @@ export async function render() {
           </div>
           <div class="section-title" style="margin:20px 0 10px;font-size:14px">Derniers paiements</div>
           <div id="recent"></div>
+          <div class="section-title" style="margin:20px 0 10px;font-size:14px">Dépenses récentes</div>
+          <div id="recentExpenses"></div>
         </div>
 
         <div class="card card-pad">
@@ -84,6 +87,25 @@ export async function render() {
         <td class="num">${fmt.money(p.montant_paye)}</td>
         <td>${badge(p.statut, p.statut === 'Soldé' ? 'green' : 'red')}</td>
       </tr>`).join('')
+    }</tbody></table></div>`;
+  }
+
+  // Les dépenses restent distinctes des loyers encaissés, mais sont visibles
+  // ici et sont déduites du solde à reverser dans le rapport de recouvrement.
+  const recentExpenses = root.querySelector('#recentExpenses');
+  const expenses = d.depenses_recentes || [];
+  if (!expenses.length) {
+    recentExpenses.innerHTML = '<p class="muted">Aucune dépense enregistrée pour cette période.</p>';
+  } else {
+    recentExpenses.innerHTML = `<div class="table-wrap"><table class="data"><tbody>${
+      expenses.map((expense) => {
+        const property = [expense.property_code, expense.property_designation].filter(Boolean).join(' · ') || 'Bien';
+        const period = `${expense.mois || '—'} ${expense.annee || ''}`.trim();
+        return `<tr>
+          <td><b>${escapeHtml(property)}</b><br><span class="muted" style="font-size:12px">${escapeHtml(expense.description || period)}${expense.description ? ` · ${escapeHtml(period)}` : ''}</span></td>
+          <td class="num">${fmt.money(expense.montant)}</td>
+        </tr>`;
+      }).join('')
     }</tbody></table></div>`;
   }
 

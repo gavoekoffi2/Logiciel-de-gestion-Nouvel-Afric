@@ -160,19 +160,28 @@ export async function render() {
   }
 
   function openRepairForm() {
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    // Le formulaire doit proposer le mois réellement affiché : autrement une
+    // dépense du mois civil courant est enregistrée, puis masquée par le filtre
+    // « mois à recouvrer » qui porte généralement sur le mois précédent.
+    const expensePeriod = selectedPeriod.mode === 'all'
+      ? currentMonth
+      : (selectedPeriod.to || selectedPeriod.from || currentMonth);
+    const [expenseYear, expenseMonth] = expensePeriod.split('-').map(Number);
     formModal({
       title: 'Ajouter une dépense / réparation sur ce bien',
       fields: [
         { name: 'mois', label: 'Mois', type: 'select', options: MOIS, required: true },
         { name: 'annee', label: 'Année', type: 'number', required: true },
-        { name: 'montant', label: 'Montant', type: 'number', min: 0, step: 1, required: true },
+        { name: 'montant', label: 'Montant', type: 'number', min: 1, step: 1, required: true },
         { name: 'description', label: 'Description', type: 'textarea', col: 2, placeholder: 'Ex. plomberie, peinture, serrure, rénovation…' },
       ],
-      values: { mois: MOIS[new Date().getMonth()], annee: new Date().getFullYear() },
+      values: { mois: MOIS[(expenseMonth || now.getMonth() + 1) - 1], annee: expenseYear || now.getFullYear() },
       submitLabel: 'Ajouter la dépense',
       onSubmit: async (v) => {
         await api.post('/api/repairs', { property_id: p.id, ...v });
-        toast('Dépense ajoutée au bien.');
+        toast('Dépense enregistrée et comptabilisée pour ce bien.');
         render();
       },
     });

@@ -1186,11 +1186,18 @@ router.post('/repairs', wrap(async (req, res) => {
   const propertyId = toInt(req.body.property_id);
   const prop = await db.prepare('SELECT code FROM properties WHERE id = ? AND company_id = ?').get(propertyId, cid);
   if (!prop) return res.status(400).json({ error: 'Veuillez sélectionner un bien valide.' });
-  const montant = toInt(req.body.montant);
-  if (montant <= 0) return res.status(400).json({ error: 'Veuillez saisir le montant de la réparation.' });
+  const montant = Number(req.body.montant);
+  if (!Number.isSafeInteger(montant) || montant <= 0) {
+    return res.status(400).json({ error: 'Veuillez saisir un montant de dépense supérieur à zéro.' });
+  }
+  const mois = clean(req.body.mois);
+  const annee = Number(req.body.annee);
+  if (!MOIS.includes(mois) || !Number.isInteger(annee) || annee < 1900 || annee > 2100) {
+    return res.status(400).json({ error: 'Veuillez sélectionner un mois et une année valides pour cette dépense.' });
+  }
   const info = await db.prepare(
     'INSERT INTO repairs (company_id, property_id, mois, annee, montant, description) VALUES (?,?,?,?,?,?)'
-  ).run(cid, propertyId, clean(req.body.mois) || null, toInt(req.body.annee) || null, montant, clean(req.body.description) || null);
+  ).run(cid, propertyId, mois, annee, montant, clean(req.body.description) || null);
   await logAction(req, 'Création', 'Réparation', `${prop.code} — ${montant}`);
   res.json(await db.prepare('SELECT * FROM repairs WHERE id = ?').get(info.lastInsertRowid));
 }));
@@ -1871,7 +1878,7 @@ router.get('/dashboard', wrap(async (req, res) => {
   const range = normalizeRange(req.query, { mode: 'current', ref: now });
   const one = (sql, ...p) => db.prepare(sql).get(...p);
 
-  const [proprietaires, locataires, maisons, occupees, subscriptions, paymentRows, allProps] = await Promise.all([
+  const [proprietaires, locataires, maisons, occupees, subscriptions, paymentRows, allProps, expenseRows] = await Promise.all([
     one('SELECT COUNT(*) n FROM owners WHERE company_id = ?', cid),
     one('SELECT COUNT(*) n FROM tenants WHERE company_id = ?', cid),
     one('SELECT COUNT(*) n FROM properties WHERE company_id = ?', cid),
@@ -1887,6 +1894,11 @@ router.get('/dashboard', wrap(async (req, res) => {
        WHERE r.company_id = ? ORDER BY r.id DESC`
     ).all(cid),
     db.prepare(`${PROPERTY_SELECT} WHERE p.company_id = ?`).all(cid),
+    db.prepare(
+      `SELECT r.*, p.code AS property_code, p.designation AS property_designation, p.ville, p.quartier
+       FROM repairs r JOIN properties p ON p.id = r.property_id AND p.company_id = r.company_id
+       WHERE r.company_id = ? ORDER BY r.id DESC`
+    ).all(cid),
   ]);
 
   // Un reglement dont le BIEN a ete supprime n'est plus rattachable a un
@@ -1900,6 +1912,7 @@ router.get('/dashboard', wrap(async (req, res) => {
   const liveSubscriptions = subscriptions.filter((s) => s.property_id);
 
   const selectedPayments = livePaymentRows.map((p) => paymentRowForRange(p, range)).filter(Boolean);
+  const selectedExpenses = expenseRows.filter((r) => periodInRange({ mois: r.mois, annee: r.annee }, range));
 
   const paymentsBySubscription = livePaymentRows.reduce((grouped, payment) => {
     if (payment.subscription_id) (grouped[payment.subscription_id] ||= []).push(payment);
@@ -1972,9 +1985,11 @@ router.get('/dashboard', wrap(async (req, res) => {
     impayes_nombre: unpaidCount,
     impayes_montant: unpaidAmount,
     reste_a_reverser: aReverser,
+    total_depenses: selectedExpenses.reduce((sum, r) => sum + (r.montant || 0), 0),
   };
   data.reste_attendu_mois = Math.max(0, data.loyer_attendu - data.loyer_encaisse_mois);
   data.derniers_paiements = selectedPayments.slice(0, 6);
+  data.depenses_recentes = selectedExpenses.slice(0, 6);
   data.maisons_disponibles = allProps.filter((r) => r.statut === 'Disponible').slice(0, 6);
 
   res.json(data);
